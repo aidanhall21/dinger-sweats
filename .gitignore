@@ -1,0 +1,8 @@
+database/*.sqlite
+database/*.sqlite-journal
+.env
+vendor/
+csv/
+tools/
+public/notes.txt
+data copy 2.db

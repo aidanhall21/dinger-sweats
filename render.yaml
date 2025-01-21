@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: dinger-sweats
+    env: php
+    buildCommand: composer install
+    startCommand: vendor/bin/heroku-php-apache2 public/
+    envVars:
+      - key: DOCUMENT_ROOT
+        value: public 
