@@ -1,6 +1,20 @@
+# Database files
 database/*.sqlite
 database/*.db
 database/*.sqlite-journal
+database/*.backup
+database/*.db.backup
+database/*.sqlite.backup
+database/backup*
+
+# System files
+.DS_Store
+**/.DS_Store     # Yes, this will ignore .DS_Store in all directories including public/
+                 # Both .DS_Store and **/.DS_Store ensure complete coverage:
+                 # - .DS_Store ignores it in the root
+                 # - **/.DS_Store ignores it in all subdirectories
+
+# Other ignored files
 .env
 vendor/
 csv/
