@@ -5,7 +5,7 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <title>My Web App</title>
+    <title>Dinger Sweats</title>
 </head>
 <body>
     <nav>
@@ -13,7 +13,7 @@
         <a href="leaderboard_teams.php">Team Leaderboard</a>
     </nav>
     <h1>Welcome to Dinger Sweats!</h1>
-    <h4>Your MLB Best Ball Sauna Lodge</h4>
+    <h4>Your MLB Best Ball Sauna</h4>
     <p>Select a leaderboard above to begin.</p>
 </body>
 </html> 

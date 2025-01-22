@@ -18,6 +18,7 @@ database/backup*
 .env
 vendor/
 csv/
+documentation/
 tools/
 public/notes.txt
 data copy 2.db

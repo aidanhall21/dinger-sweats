@@ -1,8 +1,0 @@
-services:
-  - type: web
-    name: dinger-sweats
-    env: docker
-    dockerfilePath: Dockerfile
-    envVars:
-      - key: DOCUMENT_ROOT
-        value: public 
