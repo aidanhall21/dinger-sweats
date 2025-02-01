@@ -10,7 +10,7 @@ $pdo = getDbConnection();
 // ----------------------------------------------------------------------------
 // EXCLUDED WEEKS
 // ----------------------------------------------------------------------------
-$excludedWeeks = [2426, 2427, 2410, 2414, 2416, 2418, 2428, 2430, 2432, 2435];
+$excludedWeeks = [2426, 2427, 2428, 2430, 2432, 2435];
 $excludedWeeksList = implode(',', $excludedWeeks);
 
 // ----------------------------------------------------------------------------
@@ -45,7 +45,7 @@ $query = "
         -- Simplified Advance Rate calculation using the advance table
         (
             COALESCE(
-                (SELECT SUM(times_advanced) * 1.0 FROM advance WHERE player_id = p.id)
+                (SELECT SUM(advanced) * 1.0 FROM advance WHERE player_id = p.id)
                 /
                 (SELECT COUNT(*) FROM picks WHERE player_id = p.id)
             , 0)
@@ -195,6 +195,60 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
         }
         .home-link:hover {
             background: #e0e0e0;
+        }
+        
+        /* Update advance rate coloring to use solid colors */
+        .advance-rate {
+            position: relative;
+        }
+        
+        .advance-rate::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0.5;
+            z-index: -1;
+        }
+        
+        .advance-rate.above::before {
+            background-color: #00ff00;
+            opacity: calc(var(--rate-diff) * 0.8);
+        }
+        
+        .advance-rate.below::before {
+            background-color: #ff0000;
+            opacity: calc(var(--rate-diff) * 0.8);
+        }
+        
+        /* Add position coloring */
+        .position {
+            position: relative;
+        }
+        
+        .position::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0.5;
+            z-index: -1;
+        }
+        
+        .position.pitcher::before {
+            background-color: #800080;  /* Purple */
+        }
+        
+        .position.infield::before {
+            background-color: #008800;  /* Green */
+        }
+        
+        .position.outfield::before {
+            background-color: #FFA500;  /* Orange */
         }
     </style>
 
@@ -396,11 +450,26 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
                 <td><?php echo $rank++; ?></td>
                 <td><?php echo $fullName; ?></td>
                 <td><?php echo $teamName; ?></td>
-                <td><?php echo $position; ?></td>
+                <td class="position <?php 
+                    if (str_starts_with($position, 'P')) {
+                        echo 'pitcher';
+                    } elseif (in_array($position, ['IF'])) {
+                        echo 'infield';
+                    } elseif (str_starts_with($position, 'OF')) {
+                        echo 'outfield';
+                    }
+                ?>"><?php echo $position; ?></td>
                 <td><?php echo $finalAdp; ?></td>
                 <td><?php echo round($ownership * 100, 1); ?></td>
                 <td><?php echo $totalScore; ?></td>
-                <td><?php echo round($advanceRate * 100, 1) . '%'; ?></td>
+                <td class="advance-rate <?php 
+                    $rate = $advanceRate;
+                    $baseline = 0.167;
+                    $diff = abs($rate - $baseline);
+                    echo $rate > $baseline ? 'above' : 'below';
+                ?>" style="--rate-diff: <?php echo min($diff * 5, 1); ?>">
+                    <?php echo round($advanceRate * 100, 1) . '%'; ?>
+                </td>
             </tr>
             <?php endforeach; ?>
         </tbody>

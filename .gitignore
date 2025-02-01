@@ -22,3 +22,8 @@ documentation/
 tools/
 public/notes.txt
 data copy 2.db
+db-backups/
+deploy.sh
+notes.txt
+player_data.csv
+player_table_data.csv
