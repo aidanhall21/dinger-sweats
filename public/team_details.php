@@ -40,7 +40,7 @@ $stmtRoster = $pdo->prepare("
     SELECT 
         p.picks_player_id,
         p.picks_player_name,
-        p.positions_name,
+        p.players_slotName,
         CAST(p.picks_overall_pick_number AS INTEGER) as picks_overall_pick_number,
         COALESCE(pt.total_points, 0) as total_points,
         COALESCE(pt.used_points, 0) as used_points
@@ -49,9 +49,9 @@ $stmtRoster = $pdo->prepare("
     WHERE p.picks_draft_entry_id = :draft_entry_id
     ORDER BY
         CASE 
-            WHEN p.positions_name = 'P' THEN 1
-            WHEN p.positions_name = 'IF' THEN 2
-            WHEN p.positions_name = 'OF' THEN 3
+            WHEN p.players_slotName = 'P' THEN 1
+            WHEN p.players_slotName = 'IF' THEN 2
+            WHEN p.players_slotName = 'OF' THEN 3
             ELSE 4
         END,
         CAST(p.picks_overall_pick_number AS INTEGER) ASC
@@ -71,7 +71,8 @@ $stmtScores = $pdo->prepare("
 $stmtScores->execute([':draft_entry_id' => $draftEntryId]);
 $weeklyScores = $stmtScores->fetchAll(PDO::FETCH_ASSOC);
 
-// Add query to get statistics
+// Comment out statistics query since it's not being used
+/*
 $stmtStats = $pdo->prepare("
     SELECT metric, value
     FROM score_statistics
@@ -81,6 +82,10 @@ $stats = [];
 while ($row = $stmtStats->fetch(PDO::FETCH_ASSOC)) {
     $stats[$row['metric']] = $row['value'];
 }
+*/
+
+// Initialize empty stats array to avoid JavaScript errors
+$stats = [];
 
 // Add query to get TOT statistics for both hitters and pitchers
 $stmtTotStats = $pdo->prepare("
@@ -219,10 +224,10 @@ $medianUsedPoints = $usedPointsArray[floor(count($usedPointsArray)/2)];
             <?php foreach ($roster as $player): ?>
                 <tr>
                     <td><?php echo htmlentities($player['picks_player_name']); ?></td>
-                    <td><?php echo htmlentities($player['positions_name']); ?></td>
+                    <td><?php echo htmlentities($player['players_slotName']); ?></td>
                     <td><?php echo htmlentities($player['picks_overall_pick_number']); ?></td>
                     <td class="total-points <?php 
-                        $position = $player['positions_name'];
+                        $position = $player['players_slotName'];
                         $points = (float)$player['total_points'];
                         $median = ($position === 'P') ? $totStats['pitchers'] : $totStats['hitters'];
                         $diff = abs($points - $median);
@@ -276,7 +281,6 @@ $medianUsedPoints = $usedPointsArray[floor(count($usedPointsArray)/2)];
             options: {
                 scales: {
                     y: {
-                        // Show y-axis labels for reference lines
                         ticks: {
                             display: true
                         },
@@ -295,11 +299,12 @@ $medianUsedPoints = $usedPointsArray[floor(count($usedPointsArray)/2)];
                 plugins: {
                     annotation: {
                         annotations: {
+                            /* Comment out all reference lines
                             median: {
                                 type: 'line',
                                 yMin: stats['median'],
                                 yMax: stats['median'],
-                                borderColor: 'rgba(255, 165, 0, 0.8)', // Orange
+                                borderColor: 'rgba(255, 165, 0, 0.8)',
                                 borderWidth: 2,
                                 borderDash: [6, 6],
                                 label: {
@@ -312,7 +317,7 @@ $medianUsedPoints = $usedPointsArray[floor(count($usedPointsArray)/2)];
                                 type: 'line',
                                 yMin: stats['percentile_20'],
                                 yMax: stats['percentile_20'],
-                                borderColor: 'rgba(255, 150, 150, 0.8)', // Light red
+                                borderColor: 'rgba(255, 150, 150, 0.8)',
                                 borderWidth: 2,
                                 borderDash: [6, 6],
                                 label: {
@@ -325,7 +330,7 @@ $medianUsedPoints = $usedPointsArray[floor(count($usedPointsArray)/2)];
                                 type: 'line',
                                 yMin: stats['percentile_80'],
                                 yMax: stats['percentile_80'],
-                                borderColor: 'rgba(150, 255, 150, 0.8)', // Light green
+                                borderColor: 'rgba(150, 255, 150, 0.8)',
                                 borderWidth: 2,
                                 borderDash: [6, 6],
                                 label: {
@@ -338,7 +343,7 @@ $medianUsedPoints = $usedPointsArray[floor(count($usedPointsArray)/2)];
                                 type: 'line',
                                 yMin: stats['percentile_05'],
                                 yMax: stats['percentile_05'],
-                                borderColor: 'rgba(200, 0, 0, 0.8)', // Dark red
+                                borderColor: 'rgba(200, 0, 0, 0.8)',
                                 borderWidth: 2,
                                 borderDash: [6, 6],
                                 label: {
@@ -351,7 +356,7 @@ $medianUsedPoints = $usedPointsArray[floor(count($usedPointsArray)/2)];
                                 type: 'line',
                                 yMin: stats['percentile_95'],
                                 yMax: stats['percentile_95'],
-                                borderColor: 'rgba(0, 150, 0, 0.8)', // Dark green
+                                borderColor: 'rgba(0, 150, 0, 0.8)',
                                 borderWidth: 2,
                                 borderDash: [6, 6],
                                 label: {
@@ -360,6 +365,7 @@ $medianUsedPoints = $usedPointsArray[floor(count($usedPointsArray)/2)];
                                     position: 'end'
                                 }
                             }
+                            */
                         }
                     },
                     tooltip: {

@@ -42,20 +42,23 @@ $query = "
         p.adp AS final_adp,
         IFNULL(SUM(h.TOT), 0) + IFNULL(SUM(pc.TOT), 0) AS total_score,
 
-        -- Simplified Advance Rate calculation using the advance table
-        (
-            COALESCE(
-                (SELECT SUM(advanced) * 1.0 FROM advance WHERE player_id = p.id)
-                /
-                (SELECT COUNT(*) FROM picks WHERE player_id = p.id)
-            , 0)
-        ) AS advance_rate,
+        -- Improved Advance Rate calculation with NULL handling and error prevention
+        COALESCE(
+            CAST(
+                (SELECT SUM(advanced) FROM advance WHERE player_id = p.id) AS FLOAT
+            ) 
+            / 
+            NULLIF((SELECT COUNT(*) FROM picks_info WHERE picks_player_id = p.id), 0)
+        , 0) AS advance_rate,
 
-        (
-            (SELECT COUNT(*) * 1.0 FROM picks pk WHERE pk.player_id = p.id)
-            /
-            (SELECT COUNT(DISTINCT draft_id) * 1.0 FROM picks)
-        ) AS ownership
+        -- Improved ownership calculation with NULL handling
+        COALESCE(
+            CAST(
+                (SELECT COUNT(*) FROM picks_info pi WHERE pi.picks_player_id = p.id) AS FLOAT
+            )
+            / 
+            NULLIF((SELECT COUNT(DISTINCT pi.picks_draft_id) FROM picks_info pi), 0)
+        , 0) AS ownership
 
     FROM players p
     LEFT JOIN teams t ON p.team_id = t.id

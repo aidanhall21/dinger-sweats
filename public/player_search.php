@@ -13,10 +13,10 @@ $pdo = getDbConnection();
 
 // Search for players
 $query = "
-    SELECT DISTINCT player_id, player_name 
-    FROM picks 
-    WHERE player_name LIKE :search 
-    ORDER BY player_name 
+    SELECT DISTINCT picks_player_id, picks_player_name 
+    FROM picks_info 
+    WHERE picks_player_name LIKE :search 
+    ORDER BY picks_player_name 
     LIMIT 10
 ";
 

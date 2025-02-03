@@ -41,19 +41,19 @@ $needsPicks = ($player1 !== '' || $player2 !== '');
 
 if ($needsStructure) {
     $query .= " AND EXISTS (
-        SELECT 1 FROM structures s 
-        WHERE s.draft_entry_id = l.draft_entry_id";
+        SELECT 1 FROM teams_info ti 
+        WHERE ti.draft_entry_id = l.draft_entry_id";
     
     if ($pitchers !== null) {
-        $query .= " AND s.P = :pitchers";
+        $query .= " AND ti.P = :pitchers";
         $params[':pitchers'] = $pitchers;
     }
     if ($infielders !== null) {
-        $query .= " AND s.IF = :infielders";
+        $query .= " AND ti.IF = :infielders";
         $params[':infielders'] = $infielders;
     }
     if ($outfielders !== null) {
-        $query .= " AND s.OF = :outfielders";
+        $query .= " AND ti.OF = :outfielders";
         $params[':outfielders'] = $outfielders;
     }
     $query .= ")";
@@ -75,9 +75,9 @@ if ($needsPicks) {
 
 if ($slowsOnly || $fastsOnly) {
     $query .= " AND EXISTS (
-        SELECT 1 FROM slows s 
-        WHERE s.draft_entry_id = l.draft_entry_id
-        AND s.fast = :fast
+        SELECT 1 FROM teams_info ti 
+        WHERE ti.draft_entry_id = l.draft_entry_id
+        AND ti.fast = :fast
     )";
     $params[':fast'] = $fastsOnly ? 1 : 0;
 }
@@ -85,9 +85,9 @@ if ($slowsOnly || $fastsOnly) {
 if (!empty($slots)) {
     $placeholders = array_map(function($i) { return ':slot' . $i; }, array_keys($slots));
     $query .= " AND EXISTS (
-        SELECT 1 FROM draft_slots ds 
-        WHERE ds.draft_entry_id = l.draft_entry_id 
-        AND ds.draft_slot IN (" . implode(',', $placeholders) . ")
+        SELECT 1 FROM teams_info ti 
+        WHERE ti.draft_entry_id = l.draft_entry_id 
+        AND ti.draft_slot IN (" . implode(',', $placeholders) . ")
     )";
     
     foreach ($slots as $i => $slot) {
