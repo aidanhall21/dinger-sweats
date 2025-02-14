@@ -23,6 +23,7 @@ $query = "
         l.username,
         l.rank,
         l.cumulative_points,
+        l.draft_order,
         COUNT(*) OVER() as total_count
     FROM leaderboard l
     WHERE 1=1
@@ -61,11 +62,11 @@ if ($needsStructure) {
 
 if ($needsPicks) {
     $query .= " AND l.draft_entry_id IN (
-        SELECT draft_entry_id 
-        FROM picks 
-        WHERE player_id IN (:player1" . ($player2 !== '' ? ", :player2" : "") . ")
-        GROUP BY draft_entry_id
-        HAVING COUNT(DISTINCT player_id) = " . ($player2 !== '' ? "2" : "1") . "
+        SELECT picks_draft_entry_id 
+        FROM picks_info 
+        WHERE picks_player_id IN (:player1" . ($player2 !== '' ? ", :player2" : "") . ")
+        GROUP BY picks_draft_entry_id
+        HAVING COUNT(DISTINCT picks_player_id) = " . ($player2 !== '' ? "2" : "1") . "
     )";
     $params[':player1'] = $player1;
     if ($player2 !== '') {
@@ -113,6 +114,7 @@ $finalQuery = "
         t.username,
         t.rank,
         t.cumulative_points,
+        t.draft_order,
         c.total_count,
         c.advancing_count,
         a.place
@@ -136,7 +138,7 @@ $advanceRate = $totalCount > 0 ? round(($advancingCount * 100) / $totalCount, 1)
 $rankedTeams = array_map(function($team) {
     return [
         'rank' => $team['rank'],
-        'username' => $team['username'],
+        'username' => $team['username'] . ' (' . $team['draft_order'] . ')',
         'total_points' => $team['cumulative_points'],
         'draft_entry_id' => $team['draft_entry_id'],
         'is_advancing' => $team['place'] !== null,
@@ -337,9 +339,9 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
                     }, function(data) {
                         response(data.map(function(item) {
                             return {
-                                label: item.player_name,
-                                value: item.player_name,
-                                id: item.player_id
+                                label: item.picks_player_name,
+                                value: item.picks_player_name,
+                                id: item.picks_player_id
                             };
                         }));
                     });
@@ -393,7 +395,7 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
                        placeholder="Search player..."
                        value="<?php 
                            if ($player1 !== '') {
-                               $stmt = $pdo->prepare("SELECT player_name FROM picks WHERE player_id = ? LIMIT 1");
+                               $stmt = $pdo->prepare("SELECT picks_player_name FROM picks_info WHERE picks_player_id = ? LIMIT 1");
                                $stmt->execute([$player1]);
                                echo htmlspecialchars($stmt->fetchColumn());
                            }
@@ -412,7 +414,7 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
                        placeholder="Search player..."
                        value="<?php 
                            if ($player2 !== '') {
-                               $stmt = $pdo->prepare("SELECT player_name FROM picks WHERE player_id = ? LIMIT 1");
+                               $stmt = $pdo->prepare("SELECT picks_player_name FROM picks_info WHERE picks_player_id = ? LIMIT 1");
                                $stmt->execute([$player2]);
                                echo htmlspecialchars($stmt->fetchColumn());
                            }
