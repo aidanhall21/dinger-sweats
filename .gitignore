@@ -19,7 +19,9 @@ database/backup*
 vendor/
 csv/
 documentation/
+cache/
 tools/
+public/robots.txt
 public/notes.txt
 data copy 2.db
 db-backups/

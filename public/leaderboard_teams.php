@@ -3,6 +3,19 @@ require_once __DIR__ . '/../src/db.php';
 
 $pdo = getDbConnection();
 
+// Near the top of the file, after getting $pdo:
+$cacheFile = __DIR__ . '/../cache/leaderboard.json';
+$cacheExpiry = 1800; // 5 minutes
+
+// Get all team abbreviations for dropdowns
+$stmtTeams = $pdo->prepare("
+    SELECT id, abbr 
+    FROM teams 
+    ORDER BY abbr
+");
+$stmtTeams->execute();
+$teamOptions = $stmtTeams->fetchAll(PDO::FETCH_ASSOC);
+
 // Handle search and filters
 $searchTerm = isset($_GET['search']) && $_GET['search'] !== '' ? trim($_GET['search']) : '';
 $pitchers = isset($_GET['P']) && $_GET['P'] !== '' ? (int)$_GET['P'] : null;
@@ -12,8 +25,11 @@ $slots = isset($_GET['slots']) && is_array($_GET['slots']) ? array_map('intval',
 $offset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
 $player1 = isset($_GET['player1']) && $_GET['player1'] !== '' ? trim($_GET['player1']) : '';
 $player2 = isset($_GET['player2']) && $_GET['player2'] !== '' ? trim($_GET['player2']) : '';
+$stack1 = isset($_GET['stack1']) && $_GET['stack1'] !== '' ? trim($_GET['stack1']) : '';
+$stack2 = isset($_GET['stack2']) && $_GET['stack2'] !== '' ? trim($_GET['stack2']) : '';
 $slowsOnly = isset($_GET['slows_only']) ? true : false;
 $fastsOnly = isset($_GET['fasts_only']) ? true : false;
+$leaguePlace = isset($_GET['league_place']) && $_GET['league_place'] !== '' ? (int)$_GET['league_place'] : null;
 $params = [];
 
 // Build base query
@@ -34,6 +50,11 @@ $params = [];
 if ($searchTerm !== '') {
     $query .= " AND l.username LIKE :search";
     $params[':search'] = "%$searchTerm%";
+}
+
+if ($leaguePlace !== null) {
+    $query .= " AND l.league_place = :league_place";
+    $params[':league_place'] = $leaguePlace;
 }
 
 // Only JOIN when we need structure or picks data
@@ -71,6 +92,27 @@ if ($needsPicks) {
     $params[':player1'] = $player1;
     if ($player2 !== '') {
         $params[':player2'] = $player2;
+    }
+}
+
+// Add stack filtering
+if ($stack1 !== '' || $stack2 !== '') {
+    // If stack2 is set but stack1 is empty, swap them for consistent behavior
+    if ($stack1 === '' && $stack2 !== '') {
+        $stack1 = $stack2;
+        $stack2 = '';
+    }
+    
+    $query .= " AND l.draft_entry_id IN (
+        SELECT s1.draft_entry_id 
+        FROM stacks s1
+        " . ($stack2 !== '' ? "JOIN stacks s2 ON s1.draft_entry_id = s2.draft_entry_id" : "") . "
+        WHERE s1.team_id = :stack1" . 
+        ($stack2 !== '' ? " AND s2.team_id = :stack2" : "") . "
+    )";
+    $params[':stack1'] = $stack1;
+    if ($stack2 !== '') {
+        $params[':stack2'] = $stack2;
     }
 }
 
@@ -124,16 +166,53 @@ $finalQuery = "
     LIMIT 150 OFFSET :offset
 ";
 
-// Execute single query to get all needed data
-$statement = $pdo->prepare($finalQuery);
-$params[':offset'] = $offset;
-$statement->execute($params);
-$teams = $statement->fetchAll(PDO::FETCH_ASSOC);
+// If no filters are applied, try to use cached data
+if (empty($searchTerm) && $pitchers === null && $infielders === null && 
+    $outfielders === null && empty($slots) && $player1 === '' && 
+    $player2 === '' && !$slowsOnly && !$fastsOnly && $offset === 0 &&
+    $leaguePlace === null && $stack1 === '' && $stack2 === '') {
+    
+    if (file_exists($cacheFile) && (time() - filemtime($cacheFile) < $cacheExpiry)) {
+        $cachedData = json_decode(file_get_contents($cacheFile), true);
+        $teams = $cachedData['teams'];
+        $totalCount = $cachedData['totalCount'];
+        $advancingCount = $cachedData['advancingCount'];
+        $advanceRate = $cachedData['advanceRate'];
+    } else {
+        // Execute the query and cache the results
+        $statement = $pdo->prepare($finalQuery);
+        $params[':offset'] = $offset;
+        $statement->execute($params);
+        $teams = $statement->fetchAll(PDO::FETCH_ASSOC);
 
-// Extract counts from first row (they're the same for all rows)
-$totalCount = !empty($teams) ? $teams[0]['total_count'] : 0;
-$advancingCount = !empty($teams) ? $teams[0]['advancing_count'] : 0;
-$advanceRate = $totalCount > 0 ? round(($advancingCount * 100) / $totalCount, 1) : 0;
+        $totalCount = !empty($teams) ? $teams[0]['total_count'] : 0;
+        $advancingCount = !empty($teams) ? $teams[0]['advancing_count'] : 0;
+        $advanceRate = $totalCount > 0 ? round(($advancingCount * 100) / $totalCount, 1) : 0;
+
+        // Cache the data
+        $cacheData = [
+            'teams' => $teams,
+            'totalCount' => $totalCount,
+            'advancingCount' => $advancingCount,
+            'advanceRate' => $advanceRate
+        ];
+        
+        if (!is_dir(dirname($cacheFile))) {
+            mkdir(dirname($cacheFile), 0777, true);
+        }
+        file_put_contents($cacheFile, json_encode($cacheData));
+    }
+} else {
+    // Execute query normally for filtered results
+    $statement = $pdo->prepare($finalQuery);
+    $params[':offset'] = $offset;
+    $statement->execute($params);
+    $teams = $statement->fetchAll(PDO::FETCH_ASSOC);
+    
+    $totalCount = !empty($teams) ? $teams[0]['total_count'] : 0;
+    $advancingCount = !empty($teams) ? $teams[0]['advancing_count'] : 0;
+    $advanceRate = $totalCount > 0 ? round(($advancingCount * 100) / $totalCount, 1) : 0;
+}
 
 $rankedTeams = array_map(function($team) {
     return [
@@ -156,157 +235,43 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Drafted Teams Leaderboard</title>
+    <title>Sweating Dingers | Drafts Leaderboard | Overall Score</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="/android-chrome-192x192.png">
+    <link rel="icon" type="image/png" sizes="512x512" href="/android-chrome-512x512.png">
+    <link rel="stylesheet" href="/css/common.css">
     <style>
-        table {
-            border-collapse: collapse;
-            width: 80%;
-            margin: 1rem auto;
+        /* Search container styles */
+        .teams-search-container {
+            position: relative;
+            width: 200px;
         }
-        th, td {
-            padding: 0.5rem;
-            border: 1px solid #aaa;
-            text-align: center;
-        }
-        thead {
-            background: #f2f2f2;
-        }
-        .home-link {
+        .teams-search-container .search-results {
+            display: none;
             position: absolute;
-            top: 1rem;
-            left: 1rem;
-            padding: 0.5rem 1rem;
-            background: #f2f2f2;
-            text-decoration: none;
-            color: black;
-            border-radius: 4px;
-        }
-        .home-link:hover {
-            background: #e0e0e0;
-        }
-        .search-form {
-            width: 80%;
-            margin: 1rem auto;
-            display: flex;
-            gap: 1rem;
-            justify-content: center;
-        }
-        .search-form input[type="text"] {
-            padding: 0.5rem;
-            width: 300px;
-        }
-        .search-form button {
-            padding: 0.5rem 1rem;
-        }
-        h1 {
-            text-align: center;
-        }
-        .filters {
-            width: 80%;
-            margin: 1rem auto;
-            display: flex;
-            gap: 1rem;
-            justify-content: center;
-        }
-        .filters input[type="number"] {
-            width: 60px;
-            padding: 0.5rem;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
             border: 1px solid #ccc;
             border-radius: 4px;
-        }
-        .load-more {
-            display: block;
-            margin: 1rem auto;
-            padding: 0.5rem 1rem;
-            background: #f2f2f2;
-            border: 1px solid #aaa;
-            border-radius: 4px;
-            cursor: pointer;
-        }
-        .load-more:hover {
-            background: #e0e0e0;
-        }
-        .ui-autocomplete {
             max-height: 200px;
             overflow-y: auto;
-            overflow-x: hidden;
             z-index: 1000;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
-        .player-search {
-            width: 150px;
-            padding: 0.5rem;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-        }
-        .hidden-input {
-            display: none;
-        }
-        .filter-form {
-            width: 90%;
-            margin: 1rem auto;
-            display: flex;
-            flex-direction: column;
-            gap: 1rem;
-            padding: 1rem;
-            background: #f8f8f8;
-            border-radius: 8px;
-        }
-        .filter-row {
-            display: flex;
-            gap: 1rem;
-            flex-wrap: wrap;
-            justify-content: center;
-            align-items: flex-end;
-        }
-        .filter-section {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        .filter-section.buttons {
-            margin-left: auto;
-        }
-        .checkbox-group {
-            display: flex;
-            gap: 1rem;
-        }
-        .filter-section label {
-            font-weight: bold;
-            white-space: nowrap;
-        }
-        .filter-section input[type="text"],
-        .filter-section input[type="number"] {
-            padding: 0.5rem;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-        }
-        .filter-section button {
-            padding: 0.5rem 1rem;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            background: #f2f2f2;
+        .teams-search-container .search-results div {
+            padding: 8px 12px;
             cursor: pointer;
         }
-        .filter-section button:hover {
-            background: #e0e0e0;
+        .teams-search-container .search-results div:hover {
+            background-color: #f5f5f5;
         }
-        tr.advancing {
-            background-color: #fff0b3;  /* Slightly darker gold color */
-        }
-        tr.first-place {
-            background-color: #fff0b3;  /* Light gold */
-        }
-        tr.second-place {
-            background-color: #e8e8e8;  /* Light silver */
-        }
-        select[multiple] {
-            padding: 0.5rem;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-        }
-        select[multiple] option {
-            padding: 0.25rem 0.5rem;
-        }
+        
+        /* Draft slots grid */
         .draft-slots-grid {
             display: grid;
             grid-template-columns: repeat(6, 1fr);
@@ -325,6 +290,22 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
         }
         .slot-checkbox:hover {
             background-color: #f5f5f5;
+        }
+        .checkbox-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        
+        /* Team highlighting */
+        tr.advancing {
+            background-color: #fff0b3;  /* Slightly darker gold color */
+        }
+        tr.first-place {
+            background-color: #fff0b3;  /* Light gold */
+        }
+        tr.second-place {
+            background-color: #e8e8e8;  /* Light silver */
         }
     </style>
     <link rel="stylesheet" href="//code.jquery.com/ui/1.12.1/themes/base/jquery-ui.css">
@@ -357,6 +338,64 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
             setupPlayerAutocomplete('player1_search', 'player1');
             setupPlayerAutocomplete('player2_search', 'player2');
             
+            // Username search functionality
+            const searchInput = document.getElementById('teams-username-search');
+            const searchResults = document.getElementById('teams-search-results');
+            let debounceTimer;
+            
+            searchInput.addEventListener('input', function() {
+                clearTimeout(debounceTimer);
+                const query = this.value.trim();
+                
+                if (query.length < 2) {
+                    searchResults.style.display = 'none';
+                    return;
+                }
+                
+                debounceTimer = setTimeout(() => {
+                    fetch(`search_users.php?q=${encodeURIComponent(query)}`)
+                        .then(response => response.json())
+                        .then(data => {
+                            searchResults.innerHTML = '';
+                            
+                            if (data.length === 0) {
+                                searchResults.style.display = 'none';
+                                return;
+                            }
+                            
+                            data.forEach(username => {
+                                const div = document.createElement('div');
+                                div.textContent = username;
+                                div.addEventListener('click', function() {
+                                    searchInput.value = username;
+                                    searchResults.style.display = 'none';
+                                });
+                                searchResults.appendChild(div);
+                            });
+                            
+                            searchResults.style.display = 'block';
+                        })
+                        .catch(error => console.error('Error fetching search results:', error));
+                }, 300);
+            });
+            
+            // Close search results when clicking outside
+            document.addEventListener('click', function(e) {
+                if (!searchInput.contains(e.target) && !searchResults.contains(e.target)) {
+                    searchResults.style.display = 'none';
+                }
+            });
+            
+            // Handle form submission
+            searchInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (this.value.trim()) {
+                        this.form.submit();
+                    }
+                }
+            });
+            
             $('input[name="slows_only"]').change(function() {
                 if ($(this).is(':checked')) {
                     $('input[name="fasts_only"]').prop('checked', false);
@@ -368,23 +407,43 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
                     $('input[name="slows_only"]').prop('checked', false);
                 }
             });
+
+            // Add "None" option to team autocomplete
+            $('.ui-autocomplete').on('mouseenter', function() {
+                if (!$(this).find('.ui-menu-item:contains("None")').length) {
+                    $(this).append('<div class="ui-menu-item" data-value="NONE">None</div>');
+                }
+            });
+            
+            // Handle "None" selection
+            $(document).on('click', '.ui-menu-item:contains("None")', function() {
+                const inputId = $(this).closest('.ui-autocomplete').prev().attr('id');
+                const hiddenId = inputId.replace('_search', '');
+                $(`#${inputId}`).val('None');
+                $(`#${hiddenId}`).val('NONE');
+                return false;
+            });
         });
     </script>
 </head>
 <body>
-    <a href="/" class="home-link">← Back to Home</a>
+    <?php include_once __DIR__ . '/../src/includes/navigation.php'; ?>
+    
     <h1>Drafted Teams Leaderboard</h1>
 
     <form method="GET" class="filter-form">
         <!-- First Row -->
         <div class="filter-row">
             <div class="filter-section">
-                <label for="search">Username:</label>
-                <input type="text" 
-                       id="search"
-                       name="search" 
-                       placeholder="Search by username..."
-                       value="<?php echo isset($_GET['search']) ? htmlspecialchars($_GET['search']) : ''; ?>">
+                <label for="teams-username-search">Username:</label>
+                <div class="teams-search-container">
+                    <input type="text" 
+                           id="teams-username-search"
+                           name="search" 
+                           placeholder="Search by username..."
+                           value="<?php echo isset($_GET['search']) ? htmlspecialchars($_GET['search']) : ''; ?>">
+                    <div id="teams-search-results" class="search-results"></div>
+                </div>
             </div>
 
             <div class="filter-section">
@@ -424,21 +483,6 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
                        name="player2" 
                        value="<?php echo htmlspecialchars($player2); ?>">
             </div>
-
-            <div class="filter-section checkbox-group">
-                <label>
-                    <input type="checkbox" 
-                           name="slows_only" 
-                           <?php echo $slowsOnly ? 'checked' : ''; ?>>
-                    Slows Only
-                </label>
-                <label>
-                    <input type="checkbox" 
-                           name="fasts_only" 
-                           <?php echo $fastsOnly ? 'checked' : ''; ?>>
-                    Fasts Only
-                </label>
-            </div>
         </div>
 
         <!-- Second Row -->
@@ -448,7 +492,8 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
                 <input type="number" 
                        id="P"
                        name="P" 
-                       min="0" 
+                       min="1"
+                       max="18"
                        value="<?php echo isset($_GET['P']) ? htmlspecialchars($_GET['P']) : ''; ?>">
             </div>
             
@@ -457,7 +502,8 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
                 <input type="number" 
                        id="IF"
                        name="IF" 
-                       min="0"
+                       min="1"
+                       max="18"
                        value="<?php echo isset($_GET['IF']) ? htmlspecialchars($_GET['IF']) : ''; ?>">
             </div>
             
@@ -466,8 +512,19 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
                 <input type="number" 
                        id="OF"
                        name="OF" 
-                       min="0"
+                       min="1"
+                       max="18"
                        value="<?php echo isset($_GET['OF']) ? htmlspecialchars($_GET['OF']) : ''; ?>">
+            </div>
+
+            <div class="filter-section">
+                <label for="league_place">League Place:</label>
+                <input type="number" 
+                       id="league_place"
+                       name="league_place" 
+                       min="1" 
+                       max="12"
+                       value="<?php echo isset($_GET['league_place']) ? htmlspecialchars($_GET['league_place']) : ''; ?>">
             </div>
 
             <div class="filter-section">
@@ -483,6 +540,47 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
                         </label>
                     <?php endfor; ?>
                 </div>
+            </div>
+
+            <div class="filter-section checkbox-group">
+                <label>
+                    <input type="checkbox" 
+                           name="slows_only" 
+                           <?php echo $slowsOnly ? 'checked' : ''; ?>>
+                    Slows Only
+                </label>
+                <label>
+                    <input type="checkbox" 
+                           name="fasts_only" 
+                           <?php echo $fastsOnly ? 'checked' : ''; ?>>
+                    Fasts Only
+                </label>
+            </div>
+
+            <div class="filter-section">
+                <label for="stack1">Stack 1:</label>
+                <select id="stack1" name="stack1" class="player-search">
+                    <option value="">Select team...</option>
+                    <?php foreach ($teamOptions as $team): ?>
+                        <option value="<?php echo htmlentities($team['id'] ?? ''); ?>" 
+                                <?php echo $stack1 === $team['id'] ? 'selected' : ''; ?>>
+                            <?php echo htmlentities($team['abbr'] ?? ''); ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+
+            <div class="filter-section">
+                <label for="stack2">Stack 2:</label>
+                <select id="stack2" name="stack2" class="player-search">
+                    <option value="">Select team...</option>
+                    <?php foreach ($teamOptions as $team): ?>
+                        <option value="<?php echo htmlentities($team['id'] ?? ''); ?>" 
+                                <?php echo $stack2 === $team['id'] ? 'selected' : ''; ?>>
+                            <?php echo htmlentities($team['abbr'] ?? ''); ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
             </div>
 
             <div class="filter-section buttons">
@@ -539,5 +637,6 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
             window.location.href = `${baseUrl}${separator}offset=${newOffset}`;
         }
     </script>
+    <?php include_once __DIR__ . '/../src/includes/footer.php'; ?>
 </body>
 </html> 

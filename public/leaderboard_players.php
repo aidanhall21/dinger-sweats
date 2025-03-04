@@ -3,6 +3,10 @@ require_once __DIR__ . '/../src/db.php';
 
 $pdo = getDbConnection();
 
+// Add cache configuration
+$cacheFile = __DIR__ . '/../cache/leaderboard_players.json';
+$cacheExpiry = 1800; // 5 minutes
+
 // ----------------------------------------------------------------------------
 // SQLite requires version 3.25+ for window functions like DENSE_RANK()
 // ----------------------------------------------------------------------------
@@ -141,39 +145,65 @@ $medianQuery = "
     LIMIT 1;
 ";
 
-$medianStmt = $pdo->query($medianQuery);
-$medianScore = $medianStmt->fetchColumn();
-
-// ----------------------------------------------------------------------------
-// PREPARE AND EXECUTE
-// ----------------------------------------------------------------------------
-$statement = $pdo->prepare($query);
-
-if ($teamFilter !== '') {
-    $statement->bindValue(':team_id', $teamFilter);
-}
-if ($positionFilter !== '') {
-    if ($positionFilter === 'FLEX') {
-        $query .= " AND (p.slotName = 'IF' OR p.slotName = 'OF')";
+// If no filters are applied, try to use cached data
+if (empty($teamFilter) && empty($positionFilter) && 
+    empty($adpMin) && empty($adpMax) && !$noAdpOnly && 
+    empty($ownershipMin) && empty($ownershipMax)) {
+    
+    if (file_exists($cacheFile) && (time() - filemtime($cacheFile) < $cacheExpiry)) {
+        $cachedData = json_decode(file_get_contents($cacheFile), true);
+        $players = $cachedData['players'];
+        $medianScore = $cachedData['medianScore'];
     } else {
+        // Execute the median query
+        $medianStmt = $pdo->query($medianQuery);
+        $medianScore = $medianStmt->fetchColumn();
+
+        // Execute the main query and cache the results
+        $statement = $pdo->prepare($query);
+        $statement->execute();
+        $players = $statement->fetchAll(PDO::FETCH_ASSOC);
+
+        // Cache the data
+        $cacheData = [
+            'players' => $players,
+            'medianScore' => $medianScore
+        ];
+        
+        if (!is_dir(dirname($cacheFile))) {
+            mkdir(dirname($cacheFile), 0777, true);
+        }
+        file_put_contents($cacheFile, json_encode($cacheData));
+    }
+} else {
+    // Execute queries normally for filtered results
+    $medianStmt = $pdo->query($medianQuery);
+    $medianScore = $medianStmt->fetchColumn();
+
+    $statement = $pdo->prepare($query);
+    
+    if ($teamFilter !== '') {
+        $statement->bindValue(':team_id', $teamFilter);
+    }
+    if ($positionFilter !== '' && $positionFilter !== 'FLEX') {
         $statement->bindValue(':position', $positionFilter);
     }
+    if ($adpMin !== '') {
+        $statement->bindValue(':adp_min', $adpMin);
+    }
+    if ($adpMax !== '') {
+        $statement->bindValue(':adp_max', $adpMax);
+    }
+    if ($ownershipMin !== '') {
+        $statement->bindValue(':ownership_min', $ownershipMin, PDO::PARAM_INT);
+    }
+    if ($ownershipMax !== '') {
+        $statement->bindValue(':ownership_max', $ownershipMax, PDO::PARAM_INT);
+    }
+    
+    $statement->execute();
+    $players = $statement->fetchAll(PDO::FETCH_ASSOC);
 }
-if ($adpMin !== '') {
-    $statement->bindValue(':adp_min', $adpMin);
-}
-if ($adpMax !== '') {
-    $statement->bindValue(':adp_max', $adpMax);
-}
-if ($ownershipMin !== '') {
-    $statement->bindValue(':ownership_min', $ownershipMin, PDO::PARAM_INT);
-}
-if ($ownershipMax !== '') {
-    $statement->bindValue(':ownership_max', $ownershipMax, PDO::PARAM_INT);
-}
-
-$statement->execute();
-$players = $statement->fetchAll(PDO::FETCH_ASSOC);
 
 // ----------------------------------------------------------------------------
 // FETCH DISTINCT TEAMS AND POSITIONS FOR FILTER SELECT
@@ -189,52 +219,25 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
 <html>
 <head>
     <meta charset="utf-8" />
-    <title>Player Leaderboard</title>
-
+    <title>Sweating Dingers | Player Leaderboard | Top Scores</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="/android-chrome-192x192.png">
+    <link rel="icon" type="image/png" sizes="512x512" href="/android-chrome-512x512.png">
+    <link rel="stylesheet" href="/css/common.css">
     <style>
-        table {
-            border-collapse: collapse;
-            width: 80%;
-            margin: 1rem auto;
-        }
-        th, td {
-            padding: 0.5rem;
-            border: 1px solid #aaa;
-            text-align: center;
-        }
+        /* Remove overlapping table and filter form styles */
         .filter-form {
             width: 80%;
             margin: 1rem auto;
             display: flex;
-            gap: 1rem;
-            justify-content: space-around;
-        }
-        .filter-section {
-            display: flex;
             flex-direction: column;
-        }
-        .filter-section label {
-            font-weight: bold;
-        }
-        .sortable:hover {
-            cursor: pointer;
-            text-decoration: underline;
-        }
-        thead {
-            background: #f2f2f2;
-        }
-        .home-link {
-            position: absolute;
-            top: 1rem;
-            left: 1rem;
-            padding: 0.5rem 1rem;
-            background: #f2f2f2;
-            text-decoration: none;
-            color: black;
-            border-radius: 4px;
-        }
-        .home-link:hover {
-            background: #e0e0e0;
+            gap: 1rem;
+            padding: 1rem;
+            background: #f8f8f8;
+            border-radius: 8px;
         }
         
         /* Update advance rate coloring to use solid colors */
@@ -262,59 +265,6 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
             background-color: #ff0000;
             opacity: calc(var(--rate-diff) * 0.8);
         }
-        
-        /* Add position coloring */
-        .position {
-            position: relative;
-        }
-        
-        .position::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            opacity: 0.5;
-            z-index: -1;
-        }
-        
-        .position.pitcher::before {
-            background-color: #800080;  /* Purple */
-        }
-        
-        .position.infield::before {
-            background-color: #008800;  /* Green */
-        }
-        
-        .position.outfield::before {
-            background-color: #FFA500;  /* Orange */
-        }
-
-        .total-score {
-            position: relative;
-        }
-
-        .total-score::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            opacity: 0.5;
-            z-index: -1;
-        }
-
-        .total-score.above::before {
-            background-color: #00ff00;
-            opacity: calc(var(--score-diff) * 0.8);
-        }
-
-        .total-score.below::before {
-            background-color: #ff0000;
-            opacity: calc(var(--score-diff) * 0.8);
-        }
     </style>
 
     <!-- Basic JS for client-side table sorting -->
@@ -323,9 +273,23 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
             const rows = Array.from(table.querySelectorAll('tbody tr'));
             const direction = table.getAttribute('data-sort-direction-' + columnIndex) === 'asc' ? 'desc' : 'asc';
             
+            // Remove sort classes from all headers
+            table.querySelectorAll('th').forEach(th => th.classList.remove('asc', 'desc'));
+            
+            // Add sort class to current header
+            const currentHeader = table.querySelector(`th:nth-child(${columnIndex + 1})`);
+            currentHeader.classList.add(direction);
+            
             rows.sort((a, b) => {
                 const aCol = a.children[columnIndex].innerText.trim();
                 const bCol = b.children[columnIndex].innerText.trim();
+
+                // Special handling for blank team values
+                if (columnIndex === 2) { // Team column
+                    if (aCol === '' && bCol === '') return 0;
+                    if (aCol === '') return 1;
+                    if (bCol === '') return -1;
+                }
 
                 if (isNumeric) {
                     // Treat " (dash) as Infinity for numeric sorts
@@ -362,102 +326,105 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
     </script>
 </head>
 <body>
-    <a href="/" class="home-link">← Back to Home</a>
+    <?php include_once __DIR__ . '/../src/includes/navigation.php'; ?>
+    
     <h1 style="text-align:center;">Top Players Leaderboard</h1>
 
     <!-- Filter Section -->
     <form method="GET" class="filter-form">
-        <div class="filter-section">
-            <label for="team">Team Filter:</label>
-            <select name="team" id="team">
-                <option value="">All Teams</option>
-                <?php foreach ($allTeams as $team): ?>
-                    <option 
-                        value="<?php echo htmlspecialchars($team['id']); ?>"
-                        <?php if ($teamFilter === $team['id']) echo 'selected'; ?>
-                    >
-                        <?php echo htmlspecialchars($team['name']); ?>
-                    </option>
-                <?php endforeach; ?>
-            </select>
+        <div class="filter-row">
+            <div class="filter-section">
+                <label for="team">Team Filter:</label>
+                <select name="team" id="team">
+                    <option value="">All Teams</option>
+                    <?php foreach ($allTeams as $team): ?>
+                        <option 
+                            value="<?php echo htmlspecialchars($team['id']); ?>"
+                            <?php if ($teamFilter === $team['id']) echo 'selected'; ?>
+                        >
+                            <?php echo htmlspecialchars($team['name']); ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+
+            <div class="filter-section">
+                <label for="position">Position Filter:</label>
+                <select name="position" id="position">
+                    <option value="">All Positions</option>
+                    <?php foreach ($allPositions as $pos): ?>
+                        <option 
+                            value="<?php echo htmlspecialchars($pos['slotName']); ?>"
+                            <?php if ($positionFilter === $pos['slotName']) echo 'selected'; ?>
+                        >
+                            <?php echo htmlspecialchars($pos['slotName']); ?>
+                        </option>
+                    <?php endforeach; ?>
+                    <option value="FLEX" <?php if ($positionFilter === 'FLEX') echo 'selected'; ?>>FLEX</option>
+                </select>
+            </div>
         </div>
 
-        <div class="filter-section">
-            <label for="position">Position Filter:</label>
-            <select name="position" id="position">
-                <option value="">All Positions</option>
-                <?php foreach ($allPositions as $pos): ?>
-                    <option 
-                        value="<?php echo htmlspecialchars($pos['slotName']); ?>"
-                        <?php if ($positionFilter === $pos['slotName']) echo 'selected'; ?>
-                    >
-                        <?php echo htmlspecialchars($pos['slotName']); ?>
-                    </option>
-                <?php endforeach; ?>
-                <option value="FLEX" <?php if ($positionFilter === 'FLEX') echo 'selected'; ?>>FLEX</option>
-            </select>
-        </div>
+        <div class="filter-row">
+            <div class="filter-section">
+                <label for="adp_min">Min ADP:</label>
+                <input 
+                    type="text" 
+                    name="adp_min" 
+                    id="adp_min"
+                    value="<?php echo htmlspecialchars($adpMin); ?>"
+                    <?php if ($noAdpOnly) echo 'disabled'; ?>
+                />
+            </div>
+            <div class="filter-section">
+                <label for="adp_max">Max ADP:</label>
+                <input 
+                    type="text" 
+                    name="adp_max" 
+                    id="adp_max"
+                    value="<?php echo htmlspecialchars($adpMax); ?>"
+                    <?php if ($noAdpOnly) echo 'disabled'; ?>
+                />
+            </div>
+            <div class="filter-section">
+                <label for="no_adp">No ADP Only:</label>
+                <input 
+                    type="checkbox" 
+                    name="no_adp" 
+                    id="no_adp" 
+                    value="1"
+                    <?php if ($noAdpOnly) echo 'checked'; ?>
+                    onchange="toggleAdpInputs(this)"
+                />
+            </div>
+            <div class="filter-section">
+                <label for="ownership_min">Min Ownership %:</label>
+                <input 
+                    type="text" 
+                    name="ownership_min" 
+                    id="ownership_min" 
+                    value="<?php echo htmlspecialchars($ownershipMin); ?>"
+                />
+            </div>
+            <div class="filter-section">
+                <label for="ownership_max">Max Ownership %:</label>
+                <input 
+                    type="text" 
+                    name="ownership_max" 
+                    id="ownership_max" 
+                    value="<?php echo htmlspecialchars($ownershipMax); ?>"
+                />
+            </div>
 
-        <div class="filter-section">
-            <label for="adp_min">Min ADP:</label>
-            <input 
-                type="text" 
-                name="adp_min" 
-                id="adp_min"
-                value="<?php echo htmlspecialchars($adpMin); ?>"
-                <?php if ($noAdpOnly) echo 'disabled'; ?>
-            />
-        </div>
-        <div class="filter-section">
-            <label for="adp_max">Max ADP:</label>
-            <input 
-                type="text" 
-                name="adp_max" 
-                id="adp_max"
-                value="<?php echo htmlspecialchars($adpMax); ?>"
-                <?php if ($noAdpOnly) echo 'disabled'; ?>
-            />
-        </div>
-        <div class="filter-section">
-            <label for="no_adp">No ADP Only:</label>
-            <input 
-                type="checkbox" 
-                name="no_adp" 
-                id="no_adp" 
-                value="1"
-                <?php if ($noAdpOnly) echo 'checked'; ?>
-                onchange="toggleAdpInputs(this)"
-            />
-        </div>
-
-        <div class="filter-section">
-            <label for="ownership_min">Min Ownership %:</label>
-            <input 
-                type="text" 
-                name="ownership_min" 
-                id="ownership_min" 
-                value="<?php echo htmlspecialchars($ownershipMin); ?>"
-            />
-        </div>
-        <div class="filter-section">
-            <label for="ownership_max">Max Ownership %:</label>
-            <input 
-                type="text" 
-                name="ownership_max" 
-                id="ownership_max" 
-                value="<?php echo htmlspecialchars($ownershipMax); ?>"
-            />
-        </div>
-
-        <div class="filter-section" style="justify-content:flex-end;">
-            <br />
-            <button type="submit">Apply Filters</button>
-            <button 
-                type="button" 
-                onclick="window.location.href='leaderboard_players.php'"
-            >
-                Reset Filters
-            </button>
+            <div class="filter-section buttons">
+                <button type="submit">Apply Filters</button>
+                <button 
+                    type="button" 
+                    onclick="window.location.href='leaderboard_players.php'"
+                >
+                    Reset Filters
+                </button>
+            </div>
         </div>
     </form>
 
@@ -545,5 +512,6 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
             <?php endforeach; ?>
         </tbody>
     </table>
+    <?php include_once __DIR__ . '/../src/includes/footer.php'; ?>
 </body>
 </html>

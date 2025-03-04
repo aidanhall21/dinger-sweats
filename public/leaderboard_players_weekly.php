@@ -3,6 +3,10 @@ require_once __DIR__ . '/../src/db.php';
 
 $pdo = getDbConnection();
 
+// Add cache configuration
+$cacheFile = __DIR__ . '/../cache/weekly_leaderboard.json';
+$cacheExpiry = 1800; // 5 minutes
+
 // ----------------------------------------------------------------------------
 // SQLite requires version 3.25+ for window functions like DENSE_RANK()
 // ----------------------------------------------------------------------------
@@ -90,7 +94,6 @@ if ($positionFilter !== '') {
         $query .= " AND (p.slotName = 'IF' OR p.slotName = 'OF')";
     } else {
         $query .= " AND p.slotName = :position";
-        $statement->bindValue(':position', $positionFilter);
     }
 }
 if ($noAdpOnly) {
@@ -117,47 +120,6 @@ $query .= " ORDER BY
 // ----------------------------------------------------------------------------
 // PREPARE AND EXECUTE
 // ----------------------------------------------------------------------------
-$statement = $pdo->prepare($query);
-
-if ($teamFilter !== '') {
-    $statement->bindValue(':team_id', $teamFilter);
-}
-if ($adpMin !== '') {
-    $statement->bindValue(':adp_min', $adpMin);
-}
-if ($adpMax !== '') {
-    $statement->bindValue(':adp_max', $adpMax);
-}
-if ($ownershipMin !== '') {
-    $statement->bindValue(':ownership_min', $ownershipMin, PDO::PARAM_INT);
-}
-if ($ownershipMax !== '') {
-    $statement->bindValue(':ownership_max', $ownershipMax, PDO::PARAM_INT);
-}
-
-$statement->execute();
-$players = $statement->fetchAll(PDO::FETCH_ASSOC);
-
-// Organize weekly scores by player ID and week number
-$weeklyScores = [];
-$weeklyPitchCounts = [];
-foreach ($players as $player) {
-    if (!isset($weeklyScores[$player['id']])) {
-        $weeklyScores[$player['id']] = [];
-        $weeklyPitchCounts[$player['id']] = [];
-    }
-    $weeklyScores[$player['id']][$player['week_number']] = $player['total_score'];
-    $weeklyPitchCounts[$player['id']][$player['week_number']] = $player['pitch_count'];
-}
-
-// ----------------------------------------------------------------------------
-// FETCH DISTINCT TEAMS AND POSITIONS FOR FILTER SELECT
-// ----------------------------------------------------------------------------
-$teamsStmt = $pdo->query("SELECT id, name FROM teams ORDER BY name");
-$allTeams = $teamsStmt->fetchAll(PDO::FETCH_ASSOC);
-
-$posStmt = $pdo->query("SELECT DISTINCT slotName FROM players WHERE slotName != '' ORDER BY slotName");
-$allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
 
 // After connecting to the database but before the main query
 $medianQuery = "
@@ -195,87 +157,124 @@ while ($row = $medianStmt->fetch(PDO::FETCH_ASSOC)) {
     $medianScores[$row['week_number']] = $row['median_score'];
 }
 
+// If no filters are applied, try to use cached data
+if (empty($teamFilter) && empty($positionFilter) && 
+    empty($adpMin) && empty($adpMax) && !$noAdpOnly && 
+    empty($ownershipMin) && empty($ownershipMax)) {
+    
+    if (file_exists($cacheFile) && (time() - filemtime($cacheFile) < $cacheExpiry)) {
+        $cachedData = json_decode(file_get_contents($cacheFile), true);
+        $players = $cachedData['players'];
+        $weeklyScores = $cachedData['weeklyScores'];
+        $weeklyPitchCounts = $cachedData['weeklyPitchCounts'];
+        $medianScores = $cachedData['medianScores'];
+    } else {
+        // Execute queries and cache the results
+        $statement = $pdo->prepare($query);
+        $statement->execute();
+        $players = $statement->fetchAll(PDO::FETCH_ASSOC);
+
+        // Get median scores
+        $medianStmt = $pdo->query($medianQuery);
+        $medianScores = [];
+        while ($row = $medianStmt->fetch(PDO::FETCH_ASSOC)) {
+            $medianScores[$row['week_number']] = $row['median_score'];
+        }
+
+        // Organize weekly scores
+        $weeklyScores = [];
+        $weeklyPitchCounts = [];
+        foreach ($players as $player) {
+            if (!isset($weeklyScores[$player['id']])) {
+                $weeklyScores[$player['id']] = [];
+                $weeklyPitchCounts[$player['id']] = [];
+            }
+            $weeklyScores[$player['id']][$player['week_number']] = $player['total_score'];
+            $weeklyPitchCounts[$player['id']][$player['week_number']] = $player['pitch_count'];
+        }
+
+        // Cache the data
+        $cacheData = [
+            'players' => $players,
+            'weeklyScores' => $weeklyScores,
+            'weeklyPitchCounts' => $weeklyPitchCounts,
+            'medianScores' => $medianScores
+        ];
+        
+        if (!is_dir(dirname($cacheFile))) {
+            mkdir(dirname($cacheFile), 0777, true);
+        }
+        file_put_contents($cacheFile, json_encode($cacheData));
+    }
+} else {
+    // Execute queries normally for filtered results
+    $statement = $pdo->prepare($query);
+    
+    if ($teamFilter !== '') {
+        $statement->bindValue(':team_id', $teamFilter);
+    }
+    if ($positionFilter !== '' && $positionFilter !== 'FLEX') {
+        $statement->bindValue(':position', $positionFilter);
+    }
+    if ($adpMin !== '') {
+        $statement->bindValue(':adp_min', $adpMin);
+    }
+    if ($adpMax !== '') {
+        $statement->bindValue(':adp_max', $adpMax);
+    }
+    if ($ownershipMin !== '') {
+        $statement->bindValue(':ownership_min', $ownershipMin, PDO::PARAM_INT);
+    }
+    if ($ownershipMax !== '') {
+        $statement->bindValue(':ownership_max', $ownershipMax, PDO::PARAM_INT);
+    }
+    
+    $statement->execute();
+    $players = $statement->fetchAll(PDO::FETCH_ASSOC);
+
+    // Get median scores
+    $medianStmt = $pdo->query($medianQuery);
+    $medianScores = [];
+    while ($row = $medianStmt->fetch(PDO::FETCH_ASSOC)) {
+        $medianScores[$row['week_number']] = $row['median_score'];
+    }
+
+    // Organize weekly scores
+    $weeklyScores = [];
+    $weeklyPitchCounts = [];
+    foreach ($players as $player) {
+        if (!isset($weeklyScores[$player['id']])) {
+            $weeklyScores[$player['id']] = [];
+            $weeklyPitchCounts[$player['id']] = [];
+        }
+        $weeklyScores[$player['id']][$player['week_number']] = $player['total_score'];
+        $weeklyPitchCounts[$player['id']][$player['week_number']] = $player['pitch_count'];
+    }
+}
+
+// ----------------------------------------------------------------------------
+// FETCH DISTINCT TEAMS AND POSITIONS FOR FILTER SELECT
+// ----------------------------------------------------------------------------
+$teamsStmt = $pdo->query("SELECT id, name FROM teams ORDER BY name");
+$allTeams = $teamsStmt->fetchAll(PDO::FETCH_ASSOC);
+
+$posStmt = $pdo->query("SELECT DISTINCT slotName FROM players WHERE slotName != '' ORDER BY slotName");
+$allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
+
 ?>
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8" />
-    <title>Weekly Scores Leaderboard</title>
-
+    <title>Sweating Dingers | Player Leaderboard | Weekly Scores</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="/android-chrome-192x192.png">
+    <link rel="icon" type="image/png" sizes="512x512" href="/android-chrome-512x512.png">
+    <link rel="stylesheet" href="/css/common.css">
     <style>
-        table {
-            border-collapse: collapse;
-            width: 80%;
-            margin: 1rem auto;
-        }
-        th, td {
-            padding: 0.5rem;
-            border: 1px solid #aaa;
-            text-align: center;
-        }
-        .filter-form {
-            width: 80%;
-            margin: 1rem auto;
-            display: flex;
-            gap: 1rem;
-            justify-content: space-around;
-        }
-        .filter-section {
-            display: flex;
-            flex-direction: column;
-        }
-        .filter-section label {
-            font-weight: bold;
-        }
-        .sortable:hover {
-            cursor: pointer;
-            text-decoration: underline;
-        }
-        thead {
-            background: #f2f2f2;
-        }
-        .home-link {
-            position: absolute;
-            top: 1rem;
-            left: 1rem;
-            padding: 0.5rem 1rem;
-            background: #f2f2f2;
-            text-decoration: none;
-            color: black;
-            border-radius: 4px;
-        }
-        .home-link:hover {
-            background: #e0e0e0;
-        }
-        
-        /* Position coloring */
-        .position {
-            position: relative;
-        }
-        
-        .position::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            opacity: 0.5;
-            z-index: -1;
-        }
-        
-        .position.pitcher::before {
-            background-color: #800080;  /* Purple */
-        }
-        
-        .position.infield::before {
-            background-color: #008800;  /* Green */
-        }
-        
-        .position.outfield::before {
-            background-color: #FFA500;  /* Orange */
-        }
-        
         /* Prevent text selection during sorting */
         .sortable {
             user-select: none;
@@ -283,52 +282,25 @@ while ($row = $medianStmt->fetch(PDO::FETCH_ASSOC)) {
             -moz-user-select: none;
             -ms-user-select: none;
         }
-
-        .score-cell {
-            position: relative;
-        }
-
-        .score-cell::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            opacity: 0.5;
-            z-index: -1;
-        }
-
-        .score-cell.above::before {
-            background-color: #00ff00;
-            opacity: calc(var(--score-diff) * 0.9);
-        }
-
-        .score-cell.below::before {
-            background-color: #ff0000;
-            opacity: calc(var(--score-diff) * 0.9);
-        }
-
-        .two-start {
-            position: relative;
-        }
-        
-        .two-start::after {
-            content: attr(data-starts);
-            position: absolute;
-            top: 0;
-            right: 2px;
-            font-size: 0.6em;
-            font-weight: bold;
-            color: #666;
-        }
     </style>
 
     <!-- Add this script before the closing </head> tag -->
     <script>
         function sortTableByColumn(table, columnIndex, isNumeric = false) {
+            // For week columns (index 3+), default to descending on first click
+            const isWeekColumn = columnIndex >= 3;
+            const direction = isWeekColumn && !table.getAttribute('data-sort-direction-' + columnIndex) 
+                ? 'desc' 
+                : table.getAttribute('data-sort-direction-' + columnIndex) === 'asc' ? 'desc' : 'asc';
+            
+            // Remove sort classes from all headers
+            table.querySelectorAll('th').forEach(th => th.classList.remove('asc', 'desc'));
+            
+            // Add sort class to current header
+            const currentHeader = table.querySelector(`th:nth-child(${columnIndex + 1})`);
+            currentHeader.classList.add(direction);
+            
             const rows = Array.from(table.querySelectorAll('tbody tr'));
-            const direction = table.getAttribute('data-sort-direction-' + columnIndex) === 'asc' ? 'desc' : 'asc';
             
             rows.sort((a, b) => {
                 const aCol = a.children[columnIndex].innerText.trim();
@@ -341,10 +313,10 @@ while ($row = $medianStmt->fetch(PDO::FETCH_ASSOC)) {
                         const bNum = bCol === '-' ? Infinity : parseFloat(bCol);
                         return direction === 'asc' ? aNum - bNum : bNum - aNum;
                     } 
-                    // For week columns (index 3 and up), treat "-" as -Infinity
+                    // For week columns (index 3 and up), treat "-" as lowest value when sorting desc
                     else {
-                        const aNum = aCol === '-' ? -Infinity : parseFloat(aCol);
-                        const bNum = bCol === '-' ? -Infinity : parseFloat(bCol);
+                        const aNum = aCol === '-' ? (direction === 'desc' ? -Infinity : Infinity) : parseFloat(aCol);
+                        const bNum = bCol === '-' ? (direction === 'desc' ? -Infinity : Infinity) : parseFloat(bCol);
                         return direction === 'asc' ? aNum - bNum : bNum - aNum;
                     }
                 } else {
@@ -378,102 +350,105 @@ while ($row = $medianStmt->fetch(PDO::FETCH_ASSOC)) {
     </script>
 </head>
 <body>
-    <a href="/" class="home-link">← Back to Home</a>
-    <h1 style="text-align:center;">Weekly Scores Leaderboard</h1>
+    <?php include_once __DIR__ . '/../src/includes/navigation.php'; ?>
+    
+    <h1 style="text-align:center;">Weekly Player Scores</h1>
 
     <!-- Filter Section -->
     <form method="GET" class="filter-form">
-        <div class="filter-section">
-            <label for="team">Team Filter:</label>
-            <select name="team" id="team">
-                <option value="">All Teams</option>
-                <?php foreach ($allTeams as $team): ?>
-                    <option 
-                        value="<?php echo htmlspecialchars($team['id']); ?>"
-                        <?php if ($teamFilter === $team['id']) echo 'selected'; ?>
-                    >
-                        <?php echo htmlspecialchars($team['name']); ?>
-                    </option>
-                <?php endforeach; ?>
-            </select>
+        <div class="filter-row">
+            <div class="filter-section">
+                <label for="team">Team Filter:</label>
+                <select name="team" id="team">
+                    <option value="">All Teams</option>
+                    <?php foreach ($allTeams as $team): ?>
+                        <option 
+                            value="<?php echo htmlspecialchars($team['id']); ?>"
+                            <?php if ($teamFilter === $team['id']) echo 'selected'; ?>
+                        >
+                            <?php echo htmlspecialchars($team['name']); ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+
+            <div class="filter-section">
+                <label for="position">Position Filter:</label>
+                <select name="position" id="position">
+                    <option value="">All Positions</option>
+                    <?php foreach ($allPositions as $pos): ?>
+                        <option 
+                            value="<?php echo htmlspecialchars($pos['slotName']); ?>"
+                            <?php if ($positionFilter === $pos['slotName']) echo 'selected'; ?>
+                        >
+                            <?php echo htmlspecialchars($pos['slotName']); ?>
+                        </option>
+                    <?php endforeach; ?>
+                    <option value="FLEX" <?php if ($positionFilter === 'FLEX') echo 'selected'; ?>>FLEX</option>
+                </select>
+            </div>
         </div>
 
-        <div class="filter-section">
-            <label for="position">Position Filter:</label>
-            <select name="position" id="position">
-                <option value="">All Positions</option>
-                <?php foreach ($allPositions as $pos): ?>
-                    <option 
-                        value="<?php echo htmlspecialchars($pos['slotName']); ?>"
-                        <?php if ($positionFilter === $pos['slotName']) echo 'selected'; ?>
-                    >
-                        <?php echo htmlspecialchars($pos['slotName']); ?>
-                    </option>
-                <?php endforeach; ?>
-                <option value="FLEX" <?php if ($positionFilter === 'FLEX') echo 'selected'; ?>>FLEX</option>
-            </select>
-        </div>
+        <div class="filter-row">
+            <div class="filter-section">
+                <label for="adp_min">Min ADP:</label>
+                <input 
+                    type="text" 
+                    name="adp_min" 
+                    id="adp_min"
+                    value="<?php echo htmlspecialchars($adpMin); ?>"
+                    <?php if ($noAdpOnly) echo 'disabled'; ?>
+                />
+            </div>
+            <div class="filter-section">
+                <label for="adp_max">Max ADP:</label>
+                <input 
+                    type="text" 
+                    name="adp_max" 
+                    id="adp_max"
+                    value="<?php echo htmlspecialchars($adpMax); ?>"
+                    <?php if ($noAdpOnly) echo 'disabled'; ?>
+                />
+            </div>
+            <div class="filter-section">
+                <label for="no_adp">No ADP Only:</label>
+                <input 
+                    type="checkbox" 
+                    name="no_adp" 
+                    id="no_adp" 
+                    value="1"
+                    <?php if ($noAdpOnly) echo 'checked'; ?>
+                    onchange="toggleAdpInputs(this)"
+                />
+            </div>
+            <div class="filter-section">
+                <label for="ownership_min">Min Ownership %:</label>
+                <input 
+                    type="text" 
+                    name="ownership_min" 
+                    id="ownership_min" 
+                    value="<?php echo htmlspecialchars($ownershipMin); ?>"
+                />
+            </div>
+            <div class="filter-section">
+                <label for="ownership_max">Max Ownership %:</label>
+                <input 
+                    type="text" 
+                    name="ownership_max" 
+                    id="ownership_max" 
+                    value="<?php echo htmlspecialchars($ownershipMax); ?>"
+                />
+            </div>
 
-        <div class="filter-section">
-            <label for="adp_min">Min ADP:</label>
-            <input 
-                type="text" 
-                name="adp_min" 
-                id="adp_min"
-                value="<?php echo htmlspecialchars($adpMin); ?>"
-                <?php if ($noAdpOnly) echo 'disabled'; ?>
-            />
-        </div>
-        <div class="filter-section">
-            <label for="adp_max">Max ADP:</label>
-            <input 
-                type="text" 
-                name="adp_max" 
-                id="adp_max"
-                value="<?php echo htmlspecialchars($adpMax); ?>"
-                <?php if ($noAdpOnly) echo 'disabled'; ?>
-            />
-        </div>
-        <div class="filter-section">
-            <label for="no_adp">No ADP Only:</label>
-            <input 
-                type="checkbox" 
-                name="no_adp" 
-                id="no_adp" 
-                value="1"
-                <?php if ($noAdpOnly) echo 'checked'; ?>
-                onchange="toggleAdpInputs(this)"
-            />
-        </div>
-
-        <div class="filter-section">
-            <label for="ownership_min">Min Ownership %:</label>
-            <input 
-                type="text" 
-                name="ownership_min" 
-                id="ownership_min" 
-                value="<?php echo htmlspecialchars($ownershipMin); ?>"
-            />
-        </div>
-        <div class="filter-section">
-            <label for="ownership_max">Max Ownership %:</label>
-            <input 
-                type="text" 
-                name="ownership_max" 
-                id="ownership_max" 
-                value="<?php echo htmlspecialchars($ownershipMax); ?>"
-            />
-        </div>
-
-        <div class="filter-section" style="justify-content:flex-end;">
-            <br />
-            <button type="submit">Apply Filters</button>
-            <button 
-                type="button" 
-                onclick="window.location.href='leaderboard_players_weekly.php'"
-            >
-                Reset Filters
-            </button>
+            <div class="filter-section buttons">
+                <button type="submit">Apply Filters</button>
+                <button 
+                    type="button" 
+                    onclick="window.location.href='leaderboard_players_weekly.php'"
+                >
+                    Reset Filters
+                </button>
+            </div>
         </div>
     </form>
 
@@ -571,5 +546,7 @@ while ($row = $medianStmt->fetch(PDO::FETCH_ASSOC)) {
             <?php endforeach; ?>
         </tbody>
     </table>
+
+    <?php include_once __DIR__ . '/../src/includes/footer.php'; ?>
 </body>
 </html> 

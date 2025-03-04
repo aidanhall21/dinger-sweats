@@ -1,0 +1,477 @@
+/* Common styles for Sweating Dingers based on leaderboard_players.php */
+
+/* Base styles */
+body {
+    font-family: Roboto, Georgia, 'Times New Roman', Times, serif;
+    margin: 0;
+    padding: 0;
+}
+
+h1, h3, h4 {
+    text-align: center;
+    font-family: Roboto, Georgia, 'Times New Roman', Times, serif;
+}
+
+/* Navigation styles */
+nav {
+    text-align: center;
+    margin: 20px 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.dropdown {
+    position: relative;
+    display: inline-block;
+}
+
+.dropdown-content {
+    display: none;
+    position: absolute;
+    background-color: #f9f9f9;
+    min-width: 160px;
+    box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2);
+    z-index: 1;
+    left: 50%;
+    transform: translateX(-50%);
+}
+
+.dropdown:hover .dropdown-content {
+    display: block;
+}
+
+.dropdown-content a {
+    color: black;
+    padding: 12px 16px;
+    text-decoration: none;
+    display: block;
+    text-align: center;
+}
+
+.dropdown-content a:hover {
+    background-color: #f1f1f1;
+}
+
+.nav-button {
+    background-color: #f2f2f2;
+    color: black;
+    padding: 10px;
+    border: none;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-block;
+    font-family: Roboto, Georgia, 'Times New Roman', Times, serif;
+}
+
+.nav-separator {
+    margin: 0 10px;
+    color: #666;
+}
+
+/* Search bar styles */
+.search-container {
+    position: relative;
+    display: inline-block;
+    margin: 0 10px;
+}
+
+.search-input {
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    width: 200px;
+    font-family: Roboto, Georgia, 'Times New Roman', Times, serif;
+}
+
+.search-results {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    width: 100%;
+    max-height: 300px;
+    overflow-y: auto;
+    background: white;
+    border: 1px solid #ddd;
+    border-top: none;
+    border-radius: 0 0 4px 4px;
+    z-index: 10;
+    display: none;
+    text-align: left;
+    font-family: Roboto, Georgia, 'Times New Roman', Times, serif;
+}
+
+.search-results div {
+    padding: 10px;
+    cursor: pointer;
+    text-align: left;
+}
+
+.search-results div:hover {
+    background-color: #f1f1f1;
+}
+
+/* Mobile-friendly improvements */
+@media (max-width: 768px) {
+    nav {
+        flex-direction: column;
+        gap: 10px;
+    }
+    
+    .nav-separator {
+        display: none;
+    }
+    
+    .search-container {
+        width: 90%;
+        max-width: 300px;
+        margin: 10px auto;
+    }
+    
+    .search-input {
+        font-size: 16px; /* Prevents iOS zoom on focus */
+        padding: 12px; /* Larger touch target */
+    }
+    
+    .search-results div {
+        padding: 14px 10px; /* Larger touch targets for results */
+    }
+}
+
+/* Make sure dropdown doesn't get cut off on small screens */
+.search-results {
+    max-height: 50vh; /* Use viewport height instead of fixed pixels */
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+}
+
+/* Tooltip */
+.tooltip {
+    position: fixed;
+    background-color: rgba(0, 0, 0, 0.8);
+    color: white;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 14px;
+    font-family: Roboto, Georgia, 'Times New Roman', Times, serif;
+    pointer-events: none;
+    z-index: 1000;
+    display: none;
+}
+
+/* Support button */
+.support-button {
+    background-color: #0070ba; /* PayPal blue */
+    color: white;
+    padding: 10px;
+    border: none;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-block;
+    border-radius: 4px;
+    font-family: Roboto, Georgia, 'Times New Roman', Times, serif;
+}
+
+.support-button:hover {
+    background-color: #005ea6;
+}
+
+/* Table styles - common across all leaderboard pages */
+table {
+    border-collapse: collapse;
+    width: 80%;
+    margin: 1rem auto;
+}
+
+th, td {
+    padding: 0.5rem;
+    border: 1px solid #aaa;
+    text-align: center;
+}
+
+thead {
+    background: #f2f2f2;
+}
+
+/* Sortable table headers */
+.sortable {
+    cursor: pointer;
+    position: relative;
+    padding-right: 20px;
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+}
+
+.sortable::after {
+    content: '↕';
+    position: absolute;
+    right: 5px;
+    opacity: 0.3;
+}
+
+.sortable.asc::after {
+    content: '↑';
+    opacity: 1;
+}
+
+.sortable.desc::after {
+    content: '↓';
+    opacity: 1;
+}
+
+.sortable:hover::after {
+    opacity: 0.7;
+}
+
+/* Position coloring */
+.position {
+    position: relative;
+}
+
+.position::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0.5;
+    z-index: -1;
+}
+
+.position.pitcher::before {
+    background-color: #800080;  /* Purple */
+}
+
+.position.infield::before {
+    background-color: #008800;  /* Green */
+}
+
+.position.outfield::before {
+    background-color: #FFA500;  /* Orange */
+}
+
+/* Score cell styling */
+.score-cell, .total-score {
+    position: relative;
+}
+
+.score-cell::before,
+.total-score::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0.5;
+    z-index: -1;
+}
+
+.score-cell.above::before,
+.total-score.above::before {
+    background-color: #00ff00;
+    opacity: calc(var(--score-diff) * 0.9);
+}
+
+.score-cell.below::before,
+.total-score.below::before {
+    background-color: #ff0000;
+    opacity: calc(var(--score-diff) * 0.9);
+}
+
+/* Two-start indicator */
+.two-start {
+    position: relative;
+}
+
+.two-start::after {
+    content: attr(data-starts);
+    position: absolute;
+    top: 0;
+    right: 2px;
+    font-size: 0.6em;
+    font-weight: bold;
+    color: #666;
+}
+
+/* Filter form styles - common across all leaderboard pages */
+.filter-form {
+    width: 80%;
+    margin: 1rem auto;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    padding: 1rem;
+    background: #f8f8f8;
+    border-radius: 8px;
+    font-family: Roboto, Georgia, 'Times New Roman', Times, serif;
+}
+
+.filter-row {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: flex-end;
+}
+
+.filter-row:last-child {
+    justify-content: center;
+    padding: 0 1rem;
+}
+
+.filter-section {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-family: Roboto, Georgia, 'Times New Roman', Times, serif;
+}
+
+.filter-section.buttons {
+    margin-left: 0;
+    gap: 0.5rem;
+}
+
+.filter-section.ownership-filters {
+    display: flex;
+    gap: 1rem;
+    margin-right: auto;
+}
+
+.filter-section label {
+    font-weight: bold;
+    white-space: nowrap;
+    font-family: Roboto, Georgia, 'Times New Roman', Times, serif;
+}
+
+.filter-section input[type="text"],
+.filter-section input[type="number"],
+.filter-section select {
+    padding: 0.5rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-family: Roboto, Georgia, 'Times New Roman', Times, serif;
+}
+
+.filter-section button {
+    padding: 0.5rem 1rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: #f2f2f2;
+    cursor: pointer;
+    font-family: Roboto, Georgia, 'Times New Roman', Times, serif;
+}
+
+.filter-section button:hover {
+    background: #e0e0e0;
+}
+
+/* Player search */
+.player-search {
+    width: 150px;
+    padding: 0.5rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-family: Roboto, Georgia, 'Times New Roman', Times, serif;
+}
+
+.hidden-input {
+    display: none;
+}
+
+/* UI autocomplete */
+.ui-autocomplete {
+    max-height: 200px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    z-index: 1000;
+    font-family: Roboto, Georgia, 'Times New Roman', Times, serif;
+}
+
+.ui-autocomplete .ui-menu-item {
+    padding: 8px 12px;
+    cursor: pointer;
+}
+
+.ui-autocomplete .ui-menu-item:hover {
+    background-color: #f5f5f5;
+}
+
+.ui-autocomplete .ui-menu-item div {
+    font-family: Roboto, Georgia, 'Times New Roman', Times, serif;
+}
+
+/* Draft slots grid */
+.draft-slots-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 0.25rem;
+    padding: 0.5rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: white;
+}
+
+.slot-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.9rem;
+    cursor: pointer;
+    font-family: Roboto, Georgia, 'Times New Roman', Times, serif;
+}
+
+.slot-checkbox:hover {
+    background-color: #f5f5f5;
+}
+
+.checkbox-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+/* Progress bar styles - common across leaderboard pages */
+.progress-bar-container {
+    width: 100%;
+    background-color: #e0e0e0;
+    border-radius: 4px;
+    height: 20px;
+    position: relative;
+}
+
+.progress-bar {
+    height: 100%;
+    background-color: #8BC34A;  /* Lighter green color */
+    border-radius: 4px;
+    position: absolute;
+    top: 0;
+    left: 0;
+}
+
+.progress-text {
+    position: absolute;
+    width: 100%;
+    text-align: center;
+    color: black;
+    font-weight: bold;
+    line-height: 20px;
+}
+
+/* Load more button styles */
+.load-more {
+    display: block;
+    margin: 1rem auto;
+    padding: 0.5rem 1rem;
+    background: #f2f2f2;
+    border: 1px solid #aaa;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.load-more:hover {
+    background: #e0e0e0;
+} 

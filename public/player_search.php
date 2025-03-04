@@ -11,12 +11,18 @@ if (strlen($search) < 2) {
 
 $pdo = getDbConnection();
 
-// Search for players
+// Search for players using the players table
 $query = "
-    SELECT DISTINCT picks_player_id, picks_player_name 
-    FROM picks_info 
-    WHERE picks_player_name LIKE :search 
-    ORDER BY picks_player_name 
+    SELECT id as picks_player_id, CONCAT(first_name, ' ', last_name) as picks_player_name 
+    FROM players 
+    WHERE CONCAT(first_name, ' ', last_name) LIKE :search 
+    ORDER BY 
+        CASE 
+            WHEN adp = '-' OR adp IS NULL THEN 999999 
+            ELSE CAST(adp AS DECIMAL(10,1)) 
+        END ASC,
+        first_name, 
+        last_name
     LIMIT 10
 ";
 
