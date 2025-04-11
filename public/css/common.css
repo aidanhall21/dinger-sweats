@@ -193,6 +193,17 @@ thead {
     background: #f2f2f2;
 }
 
+/* Table link styles */
+td a {
+    color: inherit;
+    text-decoration: none;
+    transition: color 0.2s ease;
+}
+
+td a:hover {
+    color: #0066cc;
+}
+
 /* Sortable table headers */
 .sortable {
     cursor: pointer;
@@ -474,4 +485,24 @@ thead {
 
 .load-more:hover {
     background: #e0e0e0;
+}
+
+/* Chart styles */
+.charts-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+    margin: 20px auto;
+    width: 95%;
+}
+
+.chart-container {
+    width: 80%;
+    position: relative;
+}
+
+.player-info {
+    text-align: center;
+    margin: 20px 0;
 } 

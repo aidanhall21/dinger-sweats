@@ -9,6 +9,10 @@ function getDbConnection() {
         $pdo = new PDO('sqlite:' . $databasePath);
         // Recommended: set error mode to exceptions
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        
+        // Enable Write-Ahead Logging mode for better performance and concurrency
+        $pdo->exec('PRAGMA journal_mode=WAL');
+        
         return $pdo;
     } catch (PDOException $e) {
         echo 'Connection failed: ' . $e->getMessage();

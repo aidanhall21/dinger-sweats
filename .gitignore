@@ -1,6 +1,8 @@
 # Database files
 database/*.sqlite
 database/*.db
+database/*.db-shm
+database/*.db-wal
 database/*.sqlite-journal
 database/*.backup
 database/*.db.backup
@@ -17,15 +19,13 @@ database/backup*
 # Other ignored files
 .env
 vendor/
-csv/
 documentation/
 cache/
 tools/
+logs/
 public/robots.txt
 public/notes.txt
 data copy 2.db
 db-backups/
 deploy.sh
 notes.txt
-player_data.csv
-player_table_data.csv

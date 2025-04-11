@@ -14,8 +14,8 @@ $cacheExpiry = 1800; // 5 minutes
 // ----------------------------------------------------------------------------
 // EXCLUDED WEEKS
 // ----------------------------------------------------------------------------
-$excludedWeeks = [2426, 2427, 2428, 2430, 2432, 2435];
-$excludedWeeksList = implode(',', $excludedWeeks);
+// $excludedWeeks = [2426, 2427, 2428, 2430, 2432, 2435];
+// $excludedWeeksList = implode(',', $excludedWeeks);
 
 // ----------------------------------------------------------------------------
 // GET FILTER VALUES
@@ -25,8 +25,9 @@ $positionFilter = !empty($_GET['position']) ? trim($_GET['position']) : '';
 $adpMin         = isset($_GET['adp_min']) ? trim($_GET['adp_min']) : '';
 $adpMax         = isset($_GET['adp_max']) ? trim($_GET['adp_max']) : '';
 $noAdpOnly      = (isset($_GET['no_adp']) && $_GET['no_adp'] === '1');
-$ownershipMin   = isset($_GET['ownership_min']) ? trim($_GET['ownership_min']) : '';
-$ownershipMax   = isset($_GET['ownership_max']) ? trim($_GET['ownership_max']) : '';
+// Ownership variables commented out
+// $ownershipMin   = isset($_GET['ownership_min']) ? trim($_GET['ownership_min']) : '';
+// $ownershipMax   = isset($_GET['ownership_max']) ? trim($_GET['ownership_max']) : '';
 
 // ----------------------------------------------------------------------------
 // BUILD QUERY
@@ -35,50 +36,31 @@ $query = "
     WITH WeeklyScores AS (
         SELECT 
             p.id,
-            COALESCE(h.week_id, pc.week_id) as week_id,
+            w.week_id,
             w.week_number,
             SUM(IFNULL(h.TOT, 0)) as hitter_score,
             SUM(IFNULL(pc.TOT, 0)) as pitcher_score,
             SUM(IFNULL(h.TOT, 0) + IFNULL(pc.TOT, 0)) as total_score,
-            COUNT(pc.week_id) as pitch_count,
-            -- Add ownership calculation
-            COALESCE(
-                CAST(
-                    (SELECT COUNT(*) FROM picks_info pi WHERE pi.picks_player_id = p.id) AS FLOAT
-                )
-                / 
-                NULLIF((SELECT COUNT(DISTINCT pi.picks_draft_id) FROM picks_info pi), 0)
-            , 0) AS ownership
+            COUNT(pc.week_id) as pitch_count
         FROM players p
-        LEFT JOIN hitters h ON h.player_id = p.id AND h.week_id NOT IN ($excludedWeeksList)
-        LEFT JOIN pitchers pc ON pc.player_id = p.id AND pc.week_id NOT IN ($excludedWeeksList)
+        LEFT JOIN hitters h ON h.player_id = p.id
+        LEFT JOIN pitchers pc ON pc.player_id = p.id
         LEFT JOIN weeks w ON w.week_id = COALESCE(h.week_id, pc.week_id)
         WHERE (h.week_id IS NOT NULL OR pc.week_id IS NOT NULL)
-        GROUP BY p.id, COALESCE(h.week_id, pc.week_id), w.week_number
-        HAVING ownership > 0
-";
-
-// Add ownership filters
-if ($ownershipMin !== '') {
-    $query .= " AND (ownership * 100) >= :ownership_min";
-}
-if ($ownershipMax !== '') {
-    $query .= " AND (ownership * 100) <= :ownership_max";
-}
-
-$query .= ") 
+        GROUP BY p.id, w.week_id, w.week_number
+        HAVING total_score > 0
+    )
     SELECT 
         p.id,
         p.first_name,
         p.last_name,
-        t.name AS team_name,
-        p.slotName AS position,
-        p.adp AS final_adp,
+        p.team_name,
+        p.slot_name AS position,
+        p.final_adp,
         ws.week_number,
         ws.total_score,
         ws.pitch_count
     FROM players p
-    LEFT JOIN teams t ON p.team_id = t.id
     JOIN WeeklyScores ws ON ws.id = p.id
     WHERE 1=1
 ";
@@ -87,32 +69,32 @@ $query .= ")
 // ADD FILTERS
 // ----------------------------------------------------------------------------
 if ($teamFilter !== '') {
-    $query .= " AND p.team_id = :team_id";
+    $query .= " AND p.team_name = :team_name";
 }
 if ($positionFilter !== '') {
     if ($positionFilter === 'FLEX') {
-        $query .= " AND (p.slotName = 'IF' OR p.slotName = 'OF')";
+        $query .= " AND (p.slot_name = 'IF' OR p.slot_name = 'OF')";
     } else {
-        $query .= " AND p.slotName = :position";
+        $query .= " AND p.slot_name = :position";
     }
 }
 if ($noAdpOnly) {
-    $query .= " AND (p.adp IS NULL OR p.adp = '-')";
+    $query .= " AND (p.final_adp IS NULL OR p.final_adp = '-')";
 } else {
     if ($adpMin !== '') {
         // For safety, treat blank and dash as "null" ADP
-        $query .= " AND (CAST(p.adp AS REAL) >= :adp_min OR p.adp IS NULL OR p.adp = '-')";
+        $query .= " AND (CAST(p.final_adp AS REAL) >= :adp_min OR p.final_adp IS NULL OR p.final_adp = '-')";
     }
     if ($adpMax !== '') {
-        $query .= " AND p.adp IS NOT NULL AND p.adp != '-' AND CAST(p.adp AS REAL) <= :adp_max";
+        $query .= " AND p.final_adp IS NOT NULL AND p.final_adp != '-' AND CAST(p.final_adp AS REAL) <= :adp_max";
     }
 }
 
 // Sort by ADP (treating "-" and NULL as highest value), then name, then week
 $query .= " ORDER BY 
     CASE 
-        WHEN p.adp IS NULL OR p.adp = '-' THEN 999999 
-        ELSE CAST(p.adp AS REAL) 
+        WHEN p.final_adp IS NULL OR p.final_adp = '-' THEN 999999 
+        ELSE CAST(p.final_adp AS REAL) 
     END ASC,
     p.first_name ASC,
     ws.week_number ASC";
@@ -125,17 +107,17 @@ $query .= " ORDER BY
 $medianQuery = "
     WITH WeeklyScores AS (
         SELECT 
-            COALESCE(h.week_id, pc.week_id) as week_id,
+            w.week_id,
             w.week_number,
-            p.slotName,
+            p.slot_name,
             SUM(IFNULL(h.TOT, 0) + IFNULL(pc.TOT, 0)) as total_score
         FROM players p
-        LEFT JOIN hitters h ON h.player_id = p.id AND h.week_id NOT IN ($excludedWeeksList)
-        LEFT JOIN pitchers pc ON pc.player_id = p.id AND pc.week_id NOT IN ($excludedWeeksList)
+        LEFT JOIN hitters h ON h.player_id = p.id
+        LEFT JOIN pitchers pc ON pc.player_id = p.id
         LEFT JOIN weeks w ON w.week_id = COALESCE(h.week_id, pc.week_id)
         WHERE (h.week_id IS NOT NULL OR pc.week_id IS NOT NULL)
-            AND " . ($positionFilter === 'P' ? "p.slotName LIKE 'P%'" : "NOT p.slotName LIKE 'P%'") . "
-        GROUP BY p.id, COALESCE(h.week_id, pc.week_id), w.week_number, p.slotName
+            AND " . ($positionFilter === 'P' ? "p.slot_name LIKE 'P%'" : "NOT p.slot_name LIKE 'P%'") . "
+        GROUP BY p.id, w.week_id, w.week_number, p.slot_name
     )
     SELECT 
         week_number,
@@ -160,7 +142,8 @@ while ($row = $medianStmt->fetch(PDO::FETCH_ASSOC)) {
 // If no filters are applied, try to use cached data
 if (empty($teamFilter) && empty($positionFilter) && 
     empty($adpMin) && empty($adpMax) && !$noAdpOnly && 
-    empty($ownershipMin) && empty($ownershipMax)) {
+    // empty($ownershipMin) && empty($ownershipMax)) {
+    true) {
     
     if (file_exists($cacheFile) && (time() - filemtime($cacheFile) < $cacheExpiry)) {
         $cachedData = json_decode(file_get_contents($cacheFile), true);
@@ -211,7 +194,7 @@ if (empty($teamFilter) && empty($positionFilter) &&
     $statement = $pdo->prepare($query);
     
     if ($teamFilter !== '') {
-        $statement->bindValue(':team_id', $teamFilter);
+        $statement->bindValue(':team_name', $teamFilter);
     }
     if ($positionFilter !== '' && $positionFilter !== 'FLEX') {
         $statement->bindValue(':position', $positionFilter);
@@ -222,12 +205,12 @@ if (empty($teamFilter) && empty($positionFilter) &&
     if ($adpMax !== '') {
         $statement->bindValue(':adp_max', $adpMax);
     }
-    if ($ownershipMin !== '') {
-        $statement->bindValue(':ownership_min', $ownershipMin, PDO::PARAM_INT);
-    }
-    if ($ownershipMax !== '') {
-        $statement->bindValue(':ownership_max', $ownershipMax, PDO::PARAM_INT);
-    }
+    // if ($ownershipMin !== '') {
+    //     $statement->bindValue(':ownership_min', $ownershipMin, PDO::PARAM_INT);
+    // }
+    // if ($ownershipMax !== '') {
+    //     $statement->bindValue(':ownership_max', $ownershipMax, PDO::PARAM_INT);
+    // }
     
     $statement->execute();
     $players = $statement->fetchAll(PDO::FETCH_ASSOC);
@@ -252,13 +235,24 @@ if (empty($teamFilter) && empty($positionFilter) &&
     }
 }
 
+// After getting the weekly scores data, get unique weeks
+$availableWeeks = [];
+foreach ($weeklyScores as $playerScores) {
+    foreach ($playerScores as $weekNum => $score) {
+        if (!in_array($weekNum, $availableWeeks)) {
+            $availableWeeks[] = $weekNum;
+        }
+    }
+}
+sort($availableWeeks);
+
 // ----------------------------------------------------------------------------
 // FETCH DISTINCT TEAMS AND POSITIONS FOR FILTER SELECT
 // ----------------------------------------------------------------------------
-$teamsStmt = $pdo->query("SELECT id, name FROM teams ORDER BY name");
+$teamsStmt = $pdo->query("SELECT DISTINCT team_name FROM players WHERE team_name != '0' ORDER BY team_name");
 $allTeams = $teamsStmt->fetchAll(PDO::FETCH_ASSOC);
 
-$posStmt = $pdo->query("SELECT DISTINCT slotName FROM players WHERE slotName != '' ORDER BY slotName");
+$posStmt = $pdo->query("SELECT DISTINCT slot_name FROM players WHERE slot_name != '' ORDER BY slot_name");
 $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
 
 ?>
@@ -273,7 +267,7 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
     <link rel="icon" type="image/png" sizes="192x192" href="/android-chrome-192x192.png">
     <link rel="icon" type="image/png" sizes="512x512" href="/android-chrome-512x512.png">
-    <link rel="stylesheet" href="/css/common.css">
+    <link rel="stylesheet" href="/css/common.css?v=<?php echo filemtime(__DIR__ . '/css/common.css'); ?>">
     <style>
         /* Prevent text selection during sorting */
         .sortable {
@@ -363,10 +357,10 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
                     <option value="">All Teams</option>
                     <?php foreach ($allTeams as $team): ?>
                         <option 
-                            value="<?php echo htmlspecialchars($team['id']); ?>"
-                            <?php if ($teamFilter === $team['id']) echo 'selected'; ?>
+                            value="<?php echo htmlspecialchars($team['team_name']); ?>"
+                            <?php if ($teamFilter === $team['team_name']) echo 'selected'; ?>
                         >
-                            <?php echo htmlspecialchars($team['name']); ?>
+                            <?php echo htmlspecialchars($team['team_name']); ?>
                         </option>
                     <?php endforeach; ?>
                 </select>
@@ -378,10 +372,10 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
                     <option value="">All Positions</option>
                     <?php foreach ($allPositions as $pos): ?>
                         <option 
-                            value="<?php echo htmlspecialchars($pos['slotName']); ?>"
-                            <?php if ($positionFilter === $pos['slotName']) echo 'selected'; ?>
+                            value="<?php echo htmlspecialchars($pos['slot_name']); ?>"
+                            <?php if ($positionFilter === $pos['slot_name']) echo 'selected'; ?>
                         >
-                            <?php echo htmlspecialchars($pos['slotName']); ?>
+                            <?php echo htmlspecialchars($pos['slot_name']); ?>
                         </option>
                     <?php endforeach; ?>
                     <option value="FLEX" <?php if ($positionFilter === 'FLEX') echo 'selected'; ?>>FLEX</option>
@@ -421,13 +415,14 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
                     onchange="toggleAdpInputs(this)"
                 />
             </div>
-            <div class="filter-section">
+            <!-- Ownership filters temporarily disabled -->
+            <!-- <div class="filter-section">
                 <label for="ownership_min">Min Ownership %:</label>
                 <input 
                     type="text" 
                     name="ownership_min" 
                     id="ownership_min" 
-                    value="<?php echo htmlspecialchars($ownershipMin); ?>"
+                    value="<?php echo htmlspecialchars($ownershipMin ?? ''); ?>"
                 />
             </div>
             <div class="filter-section">
@@ -436,9 +431,9 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
                     type="text" 
                     name="ownership_max" 
                     id="ownership_max" 
-                    value="<?php echo htmlspecialchars($ownershipMax); ?>"
+                    value="<?php echo htmlspecialchars($ownershipMax ?? ''); ?>"
                 />
-            </div>
+            </div> -->
 
             <div class="filter-section buttons">
                 <button type="submit">Apply Filters</button>
@@ -470,31 +465,18 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
         data-sort-direction-0=""
         data-sort-direction-1=""
         data-sort-direction-2=""
-        data-sort-direction-3=""
-        data-sort-direction-4=""
-        data-sort-direction-5=""
-        data-sort-direction-6=""
-        data-sort-direction-7=""
-        data-sort-direction-8=""
-        data-sort-direction-9=""
-        data-sort-direction-10=""
-        data-sort-direction-11=""
-        data-sort-direction-12=""
-        data-sort-direction-13=""
-        data-sort-direction-14=""
-        data-sort-direction-15=""
-        data-sort-direction-16=""
-        data-sort-direction-17=""
-        data-sort-direction-18=""
+        <?php foreach ($availableWeeks as $index => $week): ?>
+            data-sort-direction-<?php echo $index + 3; ?>=""
+        <?php endforeach; ?>
     >
         <thead>
             <tr>
                 <th class="sortable">Player Name</th>
                 <th class="sortable">Position</th>
                 <th class="sortable numeric-sort">Final ADP</th>
-                <?php for ($i = 1; $i <= 16; $i++): ?>
-                    <th class="sortable numeric-sort">Week <?php echo $i; ?></th>
-                <?php endfor; ?>
+                <?php foreach ($availableWeeks as $week): ?>
+                    <th class="sortable numeric-sort">Week <?php echo $week; ?></th>
+                <?php endforeach; ?>
             </tr>
         </thead>
         <tbody>
@@ -510,7 +492,7 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
                 $finalAdp = $player['final_adp'] ? htmlspecialchars($player['final_adp']) : '-';
             ?>
                 <tr>
-                    <td><?php echo $fullName; ?></td>
+                    <td><a href="/player.php?id=<?php echo $player['id']; ?>"><?php echo $fullName; ?></a></td>
                     <td class="position <?php 
                         if (str_starts_with($position, 'P')) {
                             echo 'pitcher';
@@ -521,12 +503,12 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
                         }
                     ?>"><?php echo $position; ?></td>
                     <td><?php echo $finalAdp; ?></td>
-                    <?php for ($weekNum = 1; $weekNum <= 16; $weekNum++): 
-                        $weekScore = isset($weeklyScores[$player['id']][$weekNum]) ? 
-                            $weeklyScores[$player['id']][$weekNum] : '-';
-                        $pitchCount = isset($weeklyPitchCounts[$player['id']][$weekNum]) ? 
-                            $weeklyPitchCounts[$player['id']][$weekNum] : 0;
-                        $medianScore = isset($medianScores[$weekNum]) ? $medianScores[$weekNum] : 0;
+                    <?php foreach ($availableWeeks as $week): 
+                        $weekScore = isset($weeklyScores[$player['id']][$week]) ? 
+                            $weeklyScores[$player['id']][$week] : '-';
+                        $pitchCount = isset($weeklyPitchCounts[$player['id']][$week]) ? 
+                            $weeklyPitchCounts[$player['id']][$week] : 0;
+                        $medianScore = isset($medianScores[$week]) ? $medianScores[$week] : 0;
                         $scoreValue = $weekScore === '-' ? 0 : floatval($weekScore);
                         $scoreDiff = $medianScore > 0 ? abs($scoreValue - $medianScore) / $medianScore : 0;
                     ?>
@@ -541,7 +523,7 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
                            <?php if ($pitchCount > 1) echo 'data-starts="' . $pitchCount . '"'; ?>>
                             <?php echo $weekScore; ?>
                         </td>
-                    <?php endfor; ?>
+                    <?php endforeach; ?>
                 </tr>
             <?php endforeach; ?>
         </tbody>

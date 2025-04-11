@@ -3,15 +3,11 @@ require_once __DIR__ . '/../src/db.php';
 
 $pdo = getDbConnection();
 
-// Near the top of the file, after getting $pdo:
-$cacheFile = __DIR__ . '/../cache/leaderboard.json';
-$cacheExpiry = 1800; // 5 minutes
-
 // Get all team abbreviations for dropdowns
 $stmtTeams = $pdo->prepare("
-    SELECT id, abbr 
+    SELECT team_id, team_name 
     FROM teams 
-    ORDER BY abbr
+    ORDER BY team_name
 ");
 $stmtTeams->execute();
 $teamOptions = $stmtTeams->fetchAll(PDO::FETCH_ASSOC);
@@ -25,8 +21,8 @@ $slots = isset($_GET['slots']) && is_array($_GET['slots']) ? array_map('intval',
 $offset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
 $player1 = isset($_GET['player1']) && $_GET['player1'] !== '' ? trim($_GET['player1']) : '';
 $player2 = isset($_GET['player2']) && $_GET['player2'] !== '' ? trim($_GET['player2']) : '';
-$stack1 = isset($_GET['stack1']) && $_GET['stack1'] !== '' ? trim($_GET['stack1']) : '';
-$stack2 = isset($_GET['stack2']) && $_GET['stack2'] !== '' ? trim($_GET['stack2']) : '';
+// $stack1 = isset($_GET['stack1']) && $_GET['stack1'] !== '' ? trim($_GET['stack1']) : '';
+// $stack2 = isset($_GET['stack2']) && $_GET['stack2'] !== '' ? trim($_GET['stack2']) : '';
 $slowsOnly = isset($_GET['slows_only']) ? true : false;
 $fastsOnly = isset($_GET['fasts_only']) ? true : false;
 $leaguePlace = isset($_GET['league_place']) && $_GET['league_place'] !== '' ? (int)$_GET['league_place'] : null;
@@ -35,11 +31,7 @@ $params = [];
 // Build base query
 $query = "
     SELECT 
-        l.draft_entry_id,
-        l.username,
-        l.rank,
-        l.cumulative_points,
-        l.draft_order,
+        l.*,
         COUNT(*) OVER() as total_count
     FROM leaderboard l
     WHERE 1=1
@@ -63,19 +55,19 @@ $needsPicks = ($player1 !== '' || $player2 !== '');
 
 if ($needsStructure) {
     $query .= " AND EXISTS (
-        SELECT 1 FROM teams_info ti 
-        WHERE ti.draft_entry_id = l.draft_entry_id";
+        SELECT 1 FROM structures s
+        WHERE s.draft_entry_id = l.draft_entry_id";
     
     if ($pitchers !== null) {
-        $query .= " AND ti.P = :pitchers";
+        $query .= " AND s.P = :pitchers";
         $params[':pitchers'] = $pitchers;
     }
     if ($infielders !== null) {
-        $query .= " AND ti.IF = :infielders";
+        $query .= " AND s.IF = :infielders";
         $params[':infielders'] = $infielders;
     }
     if ($outfielders !== null) {
-        $query .= " AND ti.OF = :outfielders";
+        $query .= " AND s.OF = :outfielders";
         $params[':outfielders'] = $outfielders;
     }
     $query .= ")";
@@ -83,11 +75,14 @@ if ($needsStructure) {
 
 if ($needsPicks) {
     $query .= " AND l.draft_entry_id IN (
-        SELECT picks_draft_entry_id 
-        FROM picks_info 
-        WHERE picks_player_id IN (:player1" . ($player2 !== '' ? ", :player2" : "") . ")
-        GROUP BY picks_draft_entry_id
-        HAVING COUNT(DISTINCT picks_player_id) = " . ($player2 !== '' ? "2" : "1") . "
+        SELECT p1.draft_entry_id 
+        FROM picks p1
+        WHERE p1.player_id = :player1" . 
+        ($player2 !== '' ? " AND EXISTS (
+            SELECT 1 FROM picks p2
+            WHERE p2.draft_entry_id = p1.draft_entry_id
+            AND p2.player_id = :player2
+        )" : "") . "
     )";
     $params[':player1'] = $player1;
     if ($player2 !== '') {
@@ -96,7 +91,7 @@ if ($needsPicks) {
 }
 
 // Add stack filtering
-if ($stack1 !== '' || $stack2 !== '') {
+/*if ($stack1 !== '' || $stack2 !== '') {
     // If stack2 is set but stack1 is empty, swap them for consistent behavior
     if ($stack1 === '' && $stack2 !== '') {
         $stack1 = $stack2;
@@ -114,31 +109,23 @@ if ($stack1 !== '' || $stack2 !== '') {
     if ($stack2 !== '') {
         $params[':stack2'] = $stack2;
     }
-}
+}*/
 
 if ($slowsOnly || $fastsOnly) {
-    $query .= " AND EXISTS (
-        SELECT 1 FROM teams_info ti 
-        WHERE ti.draft_entry_id = l.draft_entry_id
-        AND ti.fast = :fast
-    )";
-    $params[':fast'] = $fastsOnly ? 1 : 0;
+    $query .= " AND l.draft_clock = :draft_clock";
+    $params[':draft_clock'] = $fastsOnly ? 'fast' : 'slow';
 }
 
 if (!empty($slots)) {
     $placeholders = array_map(function($i) { return ':slot' . $i; }, array_keys($slots));
-    $query .= " AND EXISTS (
-        SELECT 1 FROM teams_info ti 
-        WHERE ti.draft_entry_id = l.draft_entry_id 
-        AND ti.draft_slot IN (" . implode(',', $placeholders) . ")
-    )";
+    $query .= " AND l.pick_order IN (" . implode(',', $placeholders) . ")";
     
     foreach ($slots as $i => $slot) {
         $params[':slot' . $i] = $slot;
     }
 }
 
-$query .= " ORDER BY l.rank ASC";
+$query .= " ORDER BY l.team_score DESC";
 
 // Add window functions to get total count and advance info in one query
 $finalQuery = "
@@ -147,81 +134,60 @@ $finalQuery = "
     ),
     team_counts AS (
         SELECT COUNT(DISTINCT ft.draft_entry_id) as total_count,
-               COUNT(DISTINCT CASE WHEN a.draft_entry_id IS NOT NULL THEN ft.draft_entry_id END) as advancing_count
+               COUNT(DISTINCT CASE WHEN ft.advancing = 1 THEN ft.draft_entry_id END) as advancing_count
         FROM filtered_teams ft
-        LEFT JOIN advance a ON ft.draft_entry_id = a.draft_entry_id
     )
     SELECT DISTINCT
         t.draft_entry_id,
         t.username,
         t.rank,
-        t.cumulative_points,
-        t.draft_order,
+        t.team_score,
+        t.pick_order as draft_order,
+        t.advancing,
+        t.league_place,
+        t.draft_filled_time,
+        t.wild_card,
         c.total_count,
-        c.advancing_count,
-        a.place
+        c.advancing_count
     FROM (SELECT DISTINCT * FROM filtered_teams) t
     CROSS JOIN team_counts c
-    LEFT JOIN advance a ON t.draft_entry_id = a.draft_entry_id
+    ORDER BY t.team_score DESC
     LIMIT 150 OFFSET :offset
 ";
 
-// If no filters are applied, try to use cached data
-if (empty($searchTerm) && $pitchers === null && $infielders === null && 
-    $outfielders === null && empty($slots) && $player1 === '' && 
-    $player2 === '' && !$slowsOnly && !$fastsOnly && $offset === 0 &&
-    $leaguePlace === null && $stack1 === '' && $stack2 === '') {
-    
-    if (file_exists($cacheFile) && (time() - filemtime($cacheFile) < $cacheExpiry)) {
-        $cachedData = json_decode(file_get_contents($cacheFile), true);
-        $teams = $cachedData['teams'];
-        $totalCount = $cachedData['totalCount'];
-        $advancingCount = $cachedData['advancingCount'];
-        $advanceRate = $cachedData['advanceRate'];
-    } else {
-        // Execute the query and cache the results
-        $statement = $pdo->prepare($finalQuery);
-        $params[':offset'] = $offset;
-        $statement->execute($params);
-        $teams = $statement->fetchAll(PDO::FETCH_ASSOC);
+// Replace the entire cache check block with direct query execution:
+$statement = $pdo->prepare($finalQuery);
+$params[':offset'] = $offset;
+$statement->execute($params);
+$teams = $statement->fetchAll(PDO::FETCH_ASSOC);
 
-        $totalCount = !empty($teams) ? $teams[0]['total_count'] : 0;
-        $advancingCount = !empty($teams) ? $teams[0]['advancing_count'] : 0;
-        $advanceRate = $totalCount > 0 ? round(($advancingCount * 100) / $totalCount, 1) : 0;
+$totalCount = !empty($teams) ? $teams[0]['total_count'] : 0;
+$advancingCount = !empty($teams) ? $teams[0]['advancing_count'] : 0;
+$advanceRate = $totalCount > 0 ? round(($advancingCount * 100) / $totalCount, 1) : 0;
 
-        // Cache the data
-        $cacheData = [
-            'teams' => $teams,
-            'totalCount' => $totalCount,
-            'advancingCount' => $advancingCount,
-            'advanceRate' => $advanceRate
-        ];
-        
-        if (!is_dir(dirname($cacheFile))) {
-            mkdir(dirname($cacheFile), 0777, true);
-        }
-        file_put_contents($cacheFile, json_encode($cacheData));
-    }
-} else {
-    // Execute query normally for filtered results
-    $statement = $pdo->prepare($finalQuery);
-    $params[':offset'] = $offset;
-    $statement->execute($params);
-    $teams = $statement->fetchAll(PDO::FETCH_ASSOC);
-    
-    $totalCount = !empty($teams) ? $teams[0]['total_count'] : 0;
-    $advancingCount = !empty($teams) ? $teams[0]['advancing_count'] : 0;
-    $advanceRate = $totalCount > 0 ? round(($advancingCount * 100) / $totalCount, 1) : 0;
-}
+// Get wild card cutoff (lowest team score among wild card teams)
+$wildCardCutoffQuery = "
+    SELECT MIN(team_score) as wild_card_cutoff
+    FROM leaderboard
+    WHERE wild_card = 1
+";
+$wildCardStmt = $pdo->query($wildCardCutoffQuery);
+$wildCardCutoff = $wildCardStmt->fetchColumn();
 
 $rankedTeams = array_map(function($team) {
+    // Convert date string to DateTime object and format it
+    $date = DateTime::createFromFormat('m/d', $team['draft_filled_time']);
+    $formattedDate = $date ? $date->format('M d') : $team['draft_filled_time'];
+    
     return [
         'rank' => $team['rank'],
-        'username' => $team['username'] . ' (' . $team['draft_order'] . ')',
-        'total_points' => $team['cumulative_points'],
+        'username' => $team['username'],
+        'total_points' => $team['team_score'],
         'draft_entry_id' => $team['draft_entry_id'],
-        'is_advancing' => $team['place'] !== null,
-        'place' => $team['place']
+        'is_advancing' => $team['advancing'] === 1,
+        'place' => $team['league_place'],
+        'draft_date' => $formattedDate,
+        'wild_card' => $team['wild_card']
     ];
 }, $teams);
 
@@ -242,7 +208,7 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
     <link rel="icon" type="image/png" sizes="192x192" href="/android-chrome-192x192.png">
     <link rel="icon" type="image/png" sizes="512x512" href="/android-chrome-512x512.png">
-    <link rel="stylesheet" href="/css/common.css">
+    <link rel="stylesheet" href="/css/common.css?v=<?php echo filemtime(__DIR__ . '/css/common.css'); ?>">
     <style>
         /* Search container styles */
         .teams-search-container {
@@ -307,6 +273,9 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
         tr.second-place {
             background-color: #e8e8e8;  /* Light silver */
         }
+        tr.wild-card {
+            background-color: #e6ccb3;  /* Bronze color */
+        }
     </style>
     <link rel="stylesheet" href="//code.jquery.com/ui/1.12.1/themes/base/jquery-ui.css">
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
@@ -320,9 +289,9 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
                     }, function(data) {
                         response(data.map(function(item) {
                             return {
-                                label: item.picks_player_name,
-                                value: item.picks_player_name,
-                                id: item.picks_player_id
+                                label: item.player_name,
+                                value: item.player_name,
+                                id: item.id
                             };
                         }));
                     });
@@ -591,7 +560,10 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
     </form>
 
     <div style="width: 80%; margin: 1rem auto; padding: 0.5rem; background-color: #f2f2f2; border-radius: 4px; text-align: center;">
-        <strong>Advance Rate:</strong> <?php echo $advancingCount; ?> of <?php echo $totalCount; ?> teams (<?php echo $advanceRate; ?>%)
+        <strong>Advance Rate:</strong> <?php echo $advancingCount; ?> of <?php echo $totalCount; ?> teams (<?php echo $advanceRate; ?>%)<br>
+        <div style="margin-top: 0.5rem;">
+            <strong>Wild Card Cutoff:</strong> <?php echo number_format($wildCardCutoff, 0); ?> points
+        </div>
     </div>
 
     <table>
@@ -600,6 +572,7 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
                 <th>Rank</th>
                 <th>Username</th>
                 <th>Points</th>
+                <th>Draft Date</th>
             </tr>
         </thead>
         <tbody>
@@ -609,16 +582,19 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
                 $rowClass = 'first-place';
             } elseif ($teamData['place'] === 2) {
                 $rowClass = 'second-place';
+            } elseif ($teamData['wild_card'] === 1) {
+                $rowClass = 'wild-card';
             }
         ?>
             <tr class="<?php echo $rowClass; ?>">
-                <td><?php echo htmlentities($teamData['rank']); ?></td>
+                <td><?php echo $teamData['rank']; ?></td>
                 <td>
                     <a href="team_details.php?draft_entry_id=<?php echo urlencode($teamData['draft_entry_id']); ?>">
                         <?php echo htmlentities($teamData['username']); ?>
                     </a>
                 </td>
                 <td><?php echo htmlentities($teamData['total_points']); ?></td>
+                <td><?php echo htmlentities($teamData['draft_date']); ?></td>
             </tr>
         <?php endforeach; ?>
         </tbody>
