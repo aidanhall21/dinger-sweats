@@ -25,9 +25,9 @@ $positionFilter = !empty($_GET['position']) ? trim($_GET['position']) : '';
 $adpMin         = isset($_GET['adp_min']) ? trim($_GET['adp_min']) : '';
 $adpMax         = isset($_GET['adp_max']) ? trim($_GET['adp_max']) : '';
 $noAdpOnly      = (isset($_GET['no_adp']) && $_GET['no_adp'] === '1');
-// Ownership variables commented out
-// $ownershipMin   = isset($_GET['ownership_min']) ? trim($_GET['ownership_min']) : '';
-// $ownershipMax   = isset($_GET['ownership_max']) ? trim($_GET['ownership_max']) : '';
+// Initialize ownership variables
+$ownershipMin = isset($_GET['ownership_min']) ? trim($_GET['ownership_min']) : '';
+$ownershipMax = isset($_GET['ownership_max']) ? trim($_GET['ownership_max']) : '';
 
 // ----------------------------------------------------------------------------
 // BUILD QUERY
@@ -46,6 +46,7 @@ $query = "
         LEFT JOIN hitters h ON h.player_id = p.id
         LEFT JOIN pitchers pc ON pc.player_id = p.id
         LEFT JOIN weeks w ON w.week_id = COALESCE(h.week_id, pc.week_id)
+        LEFT JOIN exposure_metrics em ON em.player_id = p.id
         WHERE (h.week_id IS NOT NULL OR pc.week_id IS NOT NULL)
         GROUP BY p.id, w.week_id, w.week_number
         HAVING total_score > 0
@@ -59,9 +60,11 @@ $query = "
         p.final_adp,
         ws.week_number,
         ws.total_score,
-        ws.pitch_count
+        ws.pitch_count,
+        em.exposure_pct
     FROM players p
     JOIN WeeklyScores ws ON ws.id = p.id
+    LEFT JOIN exposure_metrics em ON em.player_id = p.id
     WHERE 1=1
 ";
 
@@ -88,6 +91,14 @@ if ($noAdpOnly) {
     if ($adpMax !== '') {
         $query .= " AND p.final_adp IS NOT NULL AND p.final_adp != '-' AND CAST(p.final_adp AS REAL) <= :adp_max";
     }
+}
+
+// Add ownership filters
+if ($ownershipMin !== '') {
+    $query .= " AND em.exposure_pct >= :ownership_min";
+}
+if ($ownershipMax !== '') {
+    $query .= " AND em.exposure_pct <= :ownership_max";
 }
 
 // Sort by ADP (treating "-" and NULL as highest value), then name, then week
@@ -142,8 +153,7 @@ while ($row = $medianStmt->fetch(PDO::FETCH_ASSOC)) {
 // If no filters are applied, try to use cached data
 if (empty($teamFilter) && empty($positionFilter) && 
     empty($adpMin) && empty($adpMax) && !$noAdpOnly && 
-    // empty($ownershipMin) && empty($ownershipMax)) {
-    true) {
+    empty($ownershipMin) && empty($ownershipMax)) {
     
     if (file_exists($cacheFile) && (time() - filemtime($cacheFile) < $cacheExpiry)) {
         $cachedData = json_decode(file_get_contents($cacheFile), true);
@@ -205,12 +215,12 @@ if (empty($teamFilter) && empty($positionFilter) &&
     if ($adpMax !== '') {
         $statement->bindValue(':adp_max', $adpMax);
     }
-    // if ($ownershipMin !== '') {
-    //     $statement->bindValue(':ownership_min', $ownershipMin, PDO::PARAM_INT);
-    // }
-    // if ($ownershipMax !== '') {
-    //     $statement->bindValue(':ownership_max', $ownershipMax, PDO::PARAM_INT);
-    // }
+    if ($ownershipMin !== '') {
+        $statement->bindValue(':ownership_min', $ownershipMin);
+    }
+    if ($ownershipMax !== '') {
+        $statement->bindValue(':ownership_max', $ownershipMax);
+    }
     
     $statement->execute();
     $players = $statement->fetchAll(PDO::FETCH_ASSOC);
@@ -415,8 +425,7 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
                     onchange="toggleAdpInputs(this)"
                 />
             </div>
-            <!-- Ownership filters temporarily disabled -->
-            <!-- <div class="filter-section">
+            <div class="filter-section">
                 <label for="ownership_min">Min Ownership %:</label>
                 <input 
                     type="text" 
@@ -433,7 +442,7 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
                     id="ownership_max" 
                     value="<?php echo htmlspecialchars($ownershipMax ?? ''); ?>"
                 />
-            </div> -->
+            </div>
 
             <div class="filter-section buttons">
                 <button type="submit">Apply Filters</button>
@@ -474,6 +483,7 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
                 <th class="sortable">Player Name</th>
                 <th class="sortable">Position</th>
                 <th class="sortable numeric-sort">Final ADP</th>
+                <th class="sortable numeric-sort">Ownership %</th>
                 <?php foreach ($availableWeeks as $week): ?>
                     <th class="sortable numeric-sort">Week <?php echo $week; ?></th>
                 <?php endforeach; ?>
@@ -490,6 +500,7 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
                 $fullName = htmlspecialchars($player['first_name'] . ' ' . $player['last_name']);
                 $position = htmlspecialchars($player['position'] ?? '');
                 $finalAdp = $player['final_adp'] ? htmlspecialchars($player['final_adp']) : '-';
+                $ownership = ($player['exposure_pct'] ?? 0) == 100 ? '100' : number_format($player['exposure_pct'] ?? 0, 1);
             ?>
                 <tr>
                     <td><a href="/player.php?id=<?php echo $player['id']; ?>"><?php echo $fullName; ?></a></td>
@@ -503,6 +514,7 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
                         }
                     ?>"><?php echo $position; ?></td>
                     <td><?php echo $finalAdp; ?></td>
+                    <td class="ownership-cell"><?php echo $ownership; ?></td>
                     <?php foreach ($availableWeeks as $week): 
                         $weekScore = isset($weeklyScores[$player['id']][$week]) ? 
                             $weeklyScores[$player['id']][$week] : '-';

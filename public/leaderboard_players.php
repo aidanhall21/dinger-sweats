@@ -3,10 +3,6 @@ require_once __DIR__ . '/../src/db.php';
 
 $pdo = getDbConnection();
 
-// Add cache configuration
-$cacheFile = __DIR__ . '/../cache/leaderboard_players.json';
-$cacheExpiry = 1800; // 5 minutes
-
 // ----------------------------------------------------------------------------
 // SQLite requires version 3.25+ for window functions like DENSE_RANK()
 // ----------------------------------------------------------------------------
@@ -26,8 +22,8 @@ $adpMin         = isset($_GET['adp_min']) ? trim($_GET['adp_min']) : '';
 $adpMax         = isset($_GET['adp_max']) ? trim($_GET['adp_max']) : '';
 $noAdpOnly      = (isset($_GET['no_adp']) && $_GET['no_adp'] === '1');
 // Initialize ownership variables with default values
-// $ownershipMin = isset($_GET['ownership_min']) ? $_GET['ownership_min'] : '';
-// $ownershipMax = isset($_GET['ownership_max']) ? $_GET['ownership_max'] : '';
+$ownershipMin = isset($_GET['ownership_min']) ? $_GET['ownership_min'] : '';
+$ownershipMax = isset($_GET['ownership_max']) ? $_GET['ownership_max'] : '';
 
 // ----------------------------------------------------------------------------
 // BUILD QUERY
@@ -55,10 +51,37 @@ $query = "
         ) + COALESCE(
             (SELECT SUM(TOT) FROM pitchers WHERE player_id = p.id AND Date = (SELECT MAX(Date) FROM pitchers)),
             0
-        ) as last_day_change
+        ) as last_day_change,
+        em.exposure_pct,
+        em.advance_rate,
+        (
+            SELECT 
+                arh_current.advance_rate - arh_previous.advance_rate
+            FROM 
+                advance_rate_history arh_current
+            LEFT JOIN (
+                SELECT 
+                    player_id, 
+                    date, 
+                    advance_rate
+                FROM 
+                    advance_rate_history 
+                WHERE 
+                    player_id = p.id
+                ORDER BY 
+                    date DESC
+                LIMIT 1 OFFSET 1
+            ) arh_previous ON arh_current.player_id = arh_previous.player_id
+            WHERE 
+                arh_current.player_id = p.id
+            ORDER BY 
+                arh_current.date DESC
+            LIMIT 1
+        ) as advance_rate_change
     FROM players p
     LEFT JOIN hitters h ON h.player_id = p.id 
     LEFT JOIN pitchers pc ON pc.player_id = p.id 
+    LEFT JOIN exposure_metrics em ON em.player_id = p.id
     WHERE 1=1
 ";
 
@@ -85,6 +108,14 @@ if ($noAdpOnly) {
     if ($adpMax !== '') {
         $query .= " AND p.final_adp IS NOT NULL AND p.final_adp != '-' AND CAST(p.final_adp AS REAL) <= :adp_max";
     }
+}
+
+// Add ownership filters
+if ($ownershipMin !== '') {
+    $query .= " AND em.exposure_pct >= :ownership_min";
+}
+if ($ownershipMax !== '') {
+    $query .= " AND em.exposure_pct <= :ownership_max";
 }
 
 // Group and require total_score > 0
@@ -121,58 +152,34 @@ $medianQuery = "
     LIMIT 1;
 ";
 
-// If no filters are applied, try to use cached data
-if (empty($teamFilter) && empty($positionFilter) && 
-    empty($adpMin) && empty($adpMax) && !$noAdpOnly) {
-    
-    if (file_exists($cacheFile) && (time() - filemtime($cacheFile) < $cacheExpiry)) {
-        $cachedData = json_decode(file_get_contents($cacheFile), true);
-        $players = $cachedData['players'];
-        $medianScore = $cachedData['medianScore'];
-    } else {
-        // Execute the median query
-        $medianStmt = $pdo->query($medianQuery);
-        $medianScore = $medianStmt->fetchColumn();
+// Execute the median query
+$medianStmt = $pdo->query($medianQuery);
+$medianScore = $medianStmt->fetchColumn();
 
-        // Execute the main query and cache the results
-        $statement = $pdo->prepare($query);
-        $statement->execute();
-        $players = $statement->fetchAll(PDO::FETCH_ASSOC);
+// Execute the main query
+$statement = $pdo->prepare($query);
 
-        // Cache the data
-        $cacheData = [
-            'players' => $players,
-            'medianScore' => $medianScore
-        ];
-        
-        if (!is_dir(dirname($cacheFile))) {
-            mkdir(dirname($cacheFile), 0777, true);
-        }
-        file_put_contents($cacheFile, json_encode($cacheData));
-    }
-} else {
-    // Execute queries normally for filtered results
-    $medianStmt = $pdo->query($medianQuery);
-    $medianScore = $medianStmt->fetchColumn();
-
-    $statement = $pdo->prepare($query);
-    
-    if ($teamFilter !== '') {
-        $statement->bindValue(':team_name', $teamFilter);
-    }
-    if ($positionFilter !== '' && $positionFilter !== 'FLEX') {
-        $statement->bindValue(':position', $positionFilter);
-    }
-    if ($adpMin !== '') {
-        $statement->bindValue(':adp_min', $adpMin);
-    }
-    if ($adpMax !== '') {
-        $statement->bindValue(':adp_max', $adpMax);
-    }
-    
-    $statement->execute();
-    $players = $statement->fetchAll(PDO::FETCH_ASSOC);
+if ($teamFilter !== '') {
+    $statement->bindValue(':team_name', $teamFilter);
 }
+if ($positionFilter !== '' && $positionFilter !== 'FLEX') {
+    $statement->bindValue(':position', $positionFilter);
+}
+if ($adpMin !== '') {
+    $statement->bindValue(':adp_min', $adpMin);
+}
+if ($adpMax !== '') {
+    $statement->bindValue(':adp_max', $adpMax);
+}
+if ($ownershipMin !== '') {
+    $statement->bindValue(':ownership_min', $ownershipMin);
+}
+if ($ownershipMax !== '') {
+    $statement->bindValue(':ownership_max', $ownershipMax);
+}
+
+$statement->execute();
+$players = $statement->fetchAll(PDO::FETCH_ASSOC);
 
 // ----------------------------------------------------------------------------
 // FETCH DISTINCT TEAMS AND POSITIONS FOR FILTER SELECT
@@ -387,8 +394,7 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
                     onchange="toggleAdpInputs(this)"
                 />
             </div>
-            <!-- Ownership filters temporarily disabled -->
-            <!-- <div class="filter-section">
+            <div class="filter-section">
                 <label for="ownership_min">Min Ownership %:</label>
                 <input 
                     type="text" 
@@ -405,7 +411,7 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
                     id="ownership_max" 
                     value="<?php echo htmlspecialchars($ownershipMax ?? ''); ?>"
                 />
-            </div> -->
+            </div>
 
             <div class="filter-section buttons">
                 <button type="submit">Apply Filters</button>
@@ -441,6 +447,8 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
         data-sort-direction-4=""
         data-sort-direction-5=""
         data-sort-direction-6=""
+        data-sort-direction-7=""
+        data-sort-direction-8=""
     >
         <thead>
             <tr>
@@ -450,6 +458,9 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
                 <th class="sortable">Position</th>
                 <th class="sortable numeric-sort">Final ADP</th>
                 <th class="sortable numeric-sort">Total Score</th>
+                <th class="sortable numeric-sort">Last Day Change</th>
+                <th class="sortable numeric-sort">Ownership %</th>
+                <th class="sortable numeric-sort">Advance Rate %</th>
                 <th class="sortable numeric-sort">Last Day Change</th>
             </tr>
         </thead>
@@ -463,6 +474,8 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
                     $finalAdp   = $player['final_adp'] ? htmlspecialchars($player['final_adp']) : '-';
                     $totalScore = htmlspecialchars($player['total_score'] ?? '0');
                     $lastDayChange = htmlspecialchars($player['last_day_change'] ?? '0');
+                    $ownership = ($player['exposure_pct'] ?? 0) == 100 ? '100' : number_format($player['exposure_pct'] ?? 0, 1);
+                    $advanceRate = number_format($player['advance_rate'] ?? 0, 1);
             ?>
             <tr>
                 <td><?php echo $rank++; ?></td>
@@ -487,6 +500,37 @@ $allPositions = $posStmt->fetchAll(PDO::FETCH_ASSOC);
                     <?php echo $totalScore; ?>
                 </td>
                 <td><?php echo $lastDayChange; ?></td>
+                <td class="ownership-cell">
+                    <?php echo $ownership; ?>
+                </td>
+                <td class="advance-rate <?php 
+                    $advanceRateValue = $advanceRate / 100;
+                    $baseline = 0.1667; // 16.67% (1/6)
+                    $diff = $advanceRateValue - $baseline;
+                    if ($diff > 0) {
+                        // For values above baseline (16.67% to 100%)
+                        // Scale the difference to 0-1 range (83.33% range)
+                        $normalizedDiff = $diff / (1 - $baseline);
+                        $opacity = min(pow($normalizedDiff, 0.5), 1);
+                        echo 'above';
+                    } else {
+                        // For values below baseline (0% to 16.67%)
+                        // Scale the difference to 0-1 range (16.67% range)
+                        $normalizedDiff = abs($diff) / $baseline;
+                        $opacity = min(pow($normalizedDiff, 3), 1);
+                        echo 'below';
+                    }
+                ?>" style="--rate-diff: <?php echo $opacity; ?>">
+                    <a href="leaderboard_teams.php?search=&player1=<?php echo urlencode($player['id']); ?>&player2=&P=&IF=&OF=&league_place=">
+                        <?php echo $advanceRate; ?>
+                    </a>
+                </td>
+                <td class="<?php echo ($player['advance_rate_change'] > 0) ? 'positive' : (($player['advance_rate_change'] < 0) ? 'negative' : ''); ?>">
+                    <?php 
+                        $advRateChange = $player['advance_rate_change'] ?? 0;
+                        echo ($advRateChange > 0 ? '+' : '') . number_format($advRateChange, 1); 
+                    ?>
+                </td>
             </tr>
             <?php endforeach; ?>
         </tbody>

@@ -22,10 +22,10 @@ if (!$player) {
 
 // Get ADP history
 $adpQuery = "
-    SELECT date, projection_adp
+    SELECT *
     FROM adp
     WHERE player_id = ?
-    ORDER BY date ASC
+    ORDER BY pick_created_time ASC
 ";
 $adpStmt = $pdo->prepare($adpQuery);
 $adpStmt->execute([$playerId]);
@@ -77,43 +77,17 @@ $playerTypeStmt->execute([$playerId, $playerId]);
 $playerType = $playerTypeStmt->fetch(PDO::FETCH_ASSOC);
 $isHitter = $playerType['hitter_count'] > 0;
 
-// Prepare data for the graphs
+// Prepare ADP data for scatterplot
 $adpData = [];
-$lastAdp = 240; // Default value for missing dates
-
-// Create a map of existing data for easy lookup
-$existingData = [];
 foreach ($adpHistory as $record) {
-    $adp = $record['projection_adp'] == 0.0 ? 240 : floatval($record['projection_adp']);
-    $existingData[$record['date']] = $adp;
-}
-
-// Get the earliest and latest dates from the ADP data
-$earliestDate = null;
-$latestDate = null;
-if (!empty($adpHistory)) {
-    $earliestDate = min(array_column($adpHistory, 'date'));
-    $latestDate = max(array_column($adpHistory, 'date'));
-}
-
-// Generate complete date range starting from earliest date
-$currentDate = DateTime::createFromFormat('m/d', $earliestDate ?? '01/01');
-$endDate = DateTime::createFromFormat('m/d', $latestDate ?? '03/27');
-$completeData = [];
-
-while ($currentDate <= $endDate) {
-    $dateStr = $currentDate->format('m/d');
-    if (isset($existingData[$dateStr])) {
-        $lastAdp = $existingData[$dateStr];
-    }
-    $completeData[] = [
-        'date' => $dateStr,
-        'adp' => $lastAdp
+    $adpData[] = [
+        'x' => $record['pick_created_time'],
+        'y' => floatval($record['overall_pick_number']),
+        'username' => $record['username'],
+        'advancing' => $record['advancing'],
+        'draft_entry_id' => $record['draft_entry_id']
     ];
-    $currentDate->modify('+1 day');
 }
-
-$adpData = $completeData;
 
 $scoringData = [];
 $dateTotals = [];
@@ -174,23 +148,45 @@ if (!empty($scoringData)) {
     $scoringData = $completeData;
 }
 
-// Calculate 10-day moving average
-$movingAverages = [];
-for ($i = 0; $i < count($scoringData); $i++) {
-    $sum = 0;
-    $count = 0;
-    // Look back up to 5 days
-    for ($j = max(0, $i - 4); $j <= $i; $j++) {
-        $sum += $scoringData[$j]['points'];
-        $count++;
-    }
-    $movingAverages[] = $count > 0 ? round($sum / $count, 2) : 0;
-}
+// Get exposure metrics
+$exposureQuery = "SELECT exposure_count, exposure_pct, advance_rate FROM exposure_metrics WHERE player_id = ?";
+$exposureStmt = $pdo->prepare($exposureQuery);
+$exposureStmt->execute([$playerId]);
+$exposureMetrics = $exposureStmt->fetch(PDO::FETCH_ASSOC);
 
-// Add moving averages to scoring data
-for ($i = 0; $i < count($scoringData); $i++) {
-    $scoringData[$i]['movingAverage'] = $movingAverages[$i];
-}
+// Calculate total score
+$totalScore = round(array_sum(array_column($scoringData, 'points')));
+
+// Get final ADP from existing adpHistory array
+$finalAdp = end($adpHistory)['projection_adp'] ?? null;
+
+// Get user draft frequency
+$userFrequencyQuery = "
+    SELECT 
+        user_id,
+        username,
+        COUNT(*) as draft_count,
+        SUM(CASE WHEN advancing = 1 THEN 1 ELSE 0 END) as advance_count
+    FROM adp
+    WHERE player_id = ?
+    GROUP BY user_id, username
+    ORDER BY draft_count DESC, advance_count DESC
+    LIMIT 25
+";
+$userFrequencyStmt = $pdo->prepare($userFrequencyQuery);
+$userFrequencyStmt->execute([$playerId]);
+$userFrequency = $userFrequencyStmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Get advance rate history
+$advanceRateQuery = "
+    SELECT date, advance_rate
+    FROM advance_rate_history
+    WHERE player_id = ?
+    ORDER BY date ASC
+";
+$advanceRateStmt = $pdo->prepare($advanceRateQuery);
+$advanceRateStmt->execute([$playerId]);
+$advanceRateHistory = $advanceRateStmt->fetchAll(PDO::FETCH_ASSOC);
 
 ?>
 <!DOCTYPE html>
@@ -206,6 +202,7 @@ for ($i = 0; $i < count($scoringData); $i++) {
     <link rel="icon" type="image/png" sizes="512x512" href="/android-chrome-512x512.png">
     <link rel="stylesheet" href="/css/common.css?v=<?php echo filemtime(__DIR__ . '/css/common.css'); ?>">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
     <style>
         /* No styles needed here - all moved to common.css */
     </style>
@@ -215,7 +212,32 @@ for ($i = 0; $i < count($scoringData); $i++) {
     
     <div class="player-info">
         <h1><?php echo htmlspecialchars($player['first_name'] . ' ' . $player['last_name']); ?></h1>
-        <p><?php echo htmlspecialchars($player['team_name'] . ' - ' . $player['slot_name']); ?></p>
+        <div style="width: 80%; margin: 1rem auto; padding: 0.5rem; background-color: #f2f2f2; border-radius: 4px; text-align: center;">
+            <div class="stat-item">
+                <span class="stat-label">Team:</span>
+                <span class="stat-value"><?php echo htmlspecialchars($player['team_name']); ?></span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Position:</span>
+                <span class="stat-value"><?php echo htmlspecialchars($player['slot_name']); ?></span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Total Score:</span>
+                <span class="stat-value"><?php echo number_format($totalScore, 0); ?></span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Ownership:</span>
+                <span class="stat-value"><?php echo $exposureMetrics ? number_format($exposureMetrics['exposure_pct'], 1) : '0.0'; ?>%</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Advance Rate:</span>
+                <span class="stat-value"><?php echo $exposureMetrics ? number_format($exposureMetrics['advance_rate'], 1) : '0.0'; ?>%</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Final ADP:</span>
+                <span class="stat-value"><?php echo $finalAdp ? number_format($finalAdp, 1) : 'N/A'; ?></span>
+            </div>
+        </div>
     </div>
 
     <div class="charts-container">
@@ -224,46 +246,99 @@ for ($i = 0; $i < count($scoringData); $i++) {
         </div>
 
         <div class="chart-container">
-            <canvas id="adpChart"></canvas>
+            <?php if (empty($adpHistory)): ?>
+                <div style="display: flex; justify-content: center; align-items: center; height: 300px; background-color: #f9f9f9; border-radius: 8px;">
+                    <p style="font-size: 18px; color: #666;">No draft data available</p>
+                </div>
+            <?php else: ?>
+                <canvas id="adpChart"></canvas>
+            <?php endif; ?>
         </div>
+    </div>
+
+    <div style="width: 80%; margin: 2rem auto;">
+        <h2>Top Drafters</h2>
+        <table style="width: 100%; border-collapse: collapse;">
+            <thead>
+                <tr style="background-color: #f2f2f2;">
+                    <th style="padding: 8px; text-align: left;">Rank</th>
+                    <th style="padding: 8px; text-align: left;">Username</th>
+                    <th style="padding: 8px; text-align: right;">Drafts</th>
+                    <th style="padding: 8px; text-align: right;">Advancing</th>
+                    <th style="padding: 8px; text-align: right;">Advance Rate</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($userFrequency as $index => $user): ?>
+                    <tr style="border-bottom: 1px solid #ddd;">
+                        <td style="padding: 8px;"><?php echo $index + 1; ?></td>
+                        <td style="padding: 8px;">
+                            <a href="user_details.php?username=<?php echo urlencode($user['username']); ?>">
+                                <?php echo htmlspecialchars($user['username']); ?>
+                            </a>
+                        </td>
+                        <td style="padding: 8px; text-align: right;"><?php echo number_format($user['draft_count']); ?></td>
+                        <td style="padding: 8px; text-align: right;"><?php echo number_format($user['advance_count']); ?></td>
+                        <td style="padding: 8px; text-align: right;">
+                            <a href="leaderboard_teams.php?search=<?php echo urlencode($user['username']); ?>&player1=<?php echo urlencode($playerId); ?>">
+                                <?php echo number_format(($user['advance_count'] / $user['draft_count']) * 100, 1); ?>%
+                            </a>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
     </div>
 
     <script>
         const adpData = <?php echo json_encode($adpData); ?>;
         const scoringData = <?php echo json_encode($scoringData); ?>;
+        const advanceRateHistory = <?php echo json_encode($advanceRateHistory); ?>;
         
-        // ADP Chart
-        const ctx = document.getElementById('adpChart').getContext('2d');
+        // Determine chart color based on position
         const position = '<?php echo $player['slot_name']; ?>';
         let chartColor;
         
         if (position.startsWith('P')) {
-            chartColor = '#800080';  // Red for pitchers
+            chartColor = '#800080';  // Purple for pitchers
         } else if (position === 'IF') {
-            chartColor = '#008800';  // Teal for infielders
+            chartColor = '#008800';  // Green for infielders
         } else if (position.startsWith('OF')) {
-            chartColor = '#FFA500';  // Blue for outfielders
+            chartColor = '#FFA500';  // Orange for outfielders
         } else {
             chartColor = '#666666';  // Default gray
         }
+        
+        <?php if (!empty($adpHistory)): ?>
+        // ADP Chart
+        const ctx = document.getElementById('adpChart').getContext('2d');
 
         new Chart(ctx, {
-            type: 'line',
+            type: 'scatter',
             data: {
-                labels: adpData.map(d => d.date),
                 datasets: [{
-                    label: 'ADP',
-                    data: adpData.map(d => d.adp),
-                    borderColor: chartColor,
-                    backgroundColor: chartColor,
-                    pointBackgroundColor: chartColor,
-                    pointBorderColor: chartColor,
-                    tension: 0.1,
-                    fill: false
+                    label: 'Advancing Picks',
+                    data: adpData.filter(d => d.advancing),
+                    backgroundColor: '#0000FF',
+                    borderColor: '#0000FF',
+                    pointRadius: 1,
+                    pointHoverRadius: 4
+                },
+                {
+                    label: 'Non-Advancing Picks',
+                    data: adpData.filter(d => !d.advancing),
+                    backgroundColor: '#CCCCCC',
+                    borderColor: '#CCCCCC',
+                    pointRadius: 1,
+                    pointHoverRadius: 4
                 }]
             },
             options: {
                 responsive: true,
+                interaction: {
+                    mode: 'point',
+                    intersect: true
+                },
                 scales: {
                     y: {
                         min: 1,
@@ -271,18 +346,24 @@ for ($i = 0; $i < count($scoringData); $i++) {
                         reverse: true,
                         title: {
                             display: true,
-                            text: 'ADP'
+                            text: 'Pick Number'
                         }
                     },
                     x: {
+                        type: 'time',
+                        time: {
+                            unit: 'day',
+                            displayFormats: {
+                                day: 'MMM d'
+                            },
+                            parser: 'yyyy-MM-dd HH:mm:ss.SSSSSS'
+                        },
                         title: {
                             display: true,
                             text: 'Date'
                         },
-                        ticks: {
-                            maxRotation: 45,
-                            minRotation: 45
-                        }
+                        min: '2025-01-13',
+                        max: '2025-03-27'
                     }
                 },
                 plugins: {
@@ -291,31 +372,42 @@ for ($i = 0; $i < count($scoringData); $i++) {
                         text: 'ADP History'
                     },
                     legend: {
-                        display: false
-                    }
-                }
-            },
-            plugins: [{
-                id: 'customBackground',
-                beforeDraw(chart) {
-                    const {ctx, chartArea: {left, right, top, bottom}, scales: {y}} = chart;
-                    const roundHeight = (y.max - y.min) / 20; // 20 rounds (240/12)
-                    
-                    ctx.save();
-                    ctx.fillStyle = 'rgba(200, 200, 200, 0.2)';
-                    
-                    for (let i = 0; i < 20; i++) {
-                        if (i % 2 === 0) {
-                            const y1 = y.getPixelForValue(y.min + (i * roundHeight));
-                            const y2 = y.getPixelForValue(y.min + ((i + 1) * roundHeight));
-                            ctx.fillRect(left, y2, right - left, y1 - y2);
+                        display: true,
+                        position: 'top'
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                const data = context.raw;
+                                return [
+                                    `Pick: ${data.y}`,
+                                    `User: ${data.username}`,
+                                    `Date: ${new Date(data.x).toLocaleDateString()}`
+                                ];
+                            },
+                            afterBody: function(context) {
+                                const data = context[0].raw;
+                                return [
+                                    '',
+                                    'Click to view team details'
+                                ];
+                            }
                         }
                     }
-                    
-                    ctx.restore();
+                },
+                onClick: function(evt, elements) {
+                    if (elements.length > 0) {
+                        const datasetIndex = elements[0].datasetIndex;
+                        const dataIndex = elements[0].index;
+                        const data = this.data.datasets[datasetIndex].data[dataIndex];
+                        if (data.draft_entry_id) {
+                            window.location.href = `team_details.php?draft_entry_id=${data.draft_entry_id}`;
+                        }
+                    }
                 }
-            }]
+            }
         });
+        <?php endif; ?>
 
         // Scoring Chart
         const scoringCtx = document.getElementById('scoringChart').getContext('2d');
@@ -324,42 +416,62 @@ for ($i = 0; $i < count($scoringData); $i++) {
             data: {
                 labels: scoringData.map(d => d.date),
                 datasets: [
-                <?php if ($isHitter) { ?>
                 {
-                    label: '5-Day Moving Average',
-                    data: scoringData.map(d => d.movingAverage),
+                    label: 'Advance Rate',
+                    data: scoringData.map(d => {
+                        const rate = advanceRateHistory.find(r => r.date === d.date);
+                        return rate ? rate.advance_rate : null;
+                    }),
                     type: 'line',
                     borderColor: '#000000',
                     backgroundColor: 'rgba(0, 0, 0, 0.1)',
                     borderWidth: 2,
                     pointRadius: 0,
-                    fill: false,
-                    tension: 0.1
+                    pointHoverRadius: 8,
+                    pointHitRadius: 15,
+                    yAxisID: 'y1',
+                    order: 1
                 },
-                <?php } ?>
                 {
                     label: 'Points Scored',
                     data: scoringData.map(d => d.points),
                     backgroundColor: scoringData.map(d => chartColor),
                     borderColor: scoringData.map(d => chartColor),
-                    borderWidth: 1
+                    borderWidth: 1,
+                    yAxisID: 'y',
+                    order: 2
                 }]
             },
             options: {
                 responsive: true,
                 interaction: {
                     mode: 'nearest',
-                    intersect: true
+                    intersect: false,
+                    axis: 'x'
                 },
                 scales: {
                     y: {
-                        beginAtZero: true,
+                        beginAtZero: <?php echo $isHitter ? 'true' : 'false'; ?>,
                         min: <?php echo $isHitter ? '0' : '-20'; ?>,
                         max: <?php echo $isHitter ? '70' : '80'; ?>,
                         stacked: true,
                         title: {
                             display: true,
                             text: 'Points'
+                        },
+                        position: 'left'
+                    },
+                    y1: {
+                        beginAtZero: <?php echo $isHitter ? 'true' : 'false'; ?>,
+                        min: <?php echo $isHitter ? '0' : '-20'; ?>,
+                        max: <?php echo $isHitter ? '70' : '80'; ?>,
+                        title: {
+                            display: true,
+                            text: 'Advance Rate (%)'
+                        },
+                        position: 'right',
+                        grid: {
+                            drawOnChartArea: false
                         }
                     },
                     x: {
@@ -376,7 +488,7 @@ for ($i = 0; $i < count($scoringData); $i++) {
                 plugins: {
                     title: {
                         display: true,
-                        text: 'Daily Scoring'
+                        text: 'Daily Scoring & Advance Rate'
                     },
                     legend: {
                         display: true,
@@ -387,21 +499,14 @@ for ($i = 0; $i < count($scoringData); $i++) {
                         callbacks: {
                             label: function(context) {
                                 const data = scoringData[context.dataIndex];
-                                <?php if ($isHitter) { ?>
-                                if (context.datasetIndex === 0) {
-                                    return `5-Day Avg: ${context.raw}`;
-                                } else {
+                                if (context.datasetIndex === 1) {
                                     return [
                                         `Points: ${context.raw}`,
                                         `Opponent: ${data.opponent}`
                                     ];
+                                } else {
+                                    return `Advance Rate: ${context.raw}%`;
                                 }
-                                <?php } else { ?>
-                                return [
-                                    `Points: ${context.raw}`,
-                                    `Opponent: ${data.opponent}`
-                                ];
-                                <?php } ?>
                             }
                         }
                     }

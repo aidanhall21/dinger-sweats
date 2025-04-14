@@ -33,33 +33,48 @@ if (!$userExists) {
 $stmtTeamStats = $pdo->prepare("
     SELECT 
         COUNT(*) as total_teams,
-        SUM(CASE WHEN points_ahead >= 0 THEN 1 ELSE 0 END) as advancing_teams
+        SUM(advancing) as advancing_teams
     FROM leaderboard
     WHERE username = :username
 ");
 $stmtTeamStats->execute([':username' => $username]);
 $teamStats = $stmtTeamStats->fetch(PDO::FETCH_ASSOC);
 
-// Get player exposures
-$stmtExposures = $pdo->prepare("
+// Get daily scores for each team
+$stmtDailyScores = $pdo->prepare("
+    WITH ranked_scores AS (
+        SELECT 
+            ds.*,
+            ROW_NUMBER() OVER (PARTITION BY ds.draft_entry_id ORDER BY ds.date DESC) as rn,
+            LAG(ds.team_score) OVER (PARTITION BY ds.draft_entry_id ORDER BY ds.date) as prev_score,
+            LAG(ds.advancing) OVER (PARTITION BY ds.draft_entry_id ORDER BY ds.date) as prev_advancing
+        FROM daily_scores ds
+        WHERE ds.draft_entry_id IN (
+            SELECT draft_entry_id 
+            FROM leaderboard 
+            WHERE username = :username
+        )
+    )
     SELECT 
-        player_name as picks_player_name,
-        position as players_slotName,
-        player_id,
-        drafted_count,
-        exposure_percentage,
-        total_advance_rate,
-        user_advance_rate
-    FROM exposures
-    WHERE username = :username
-    ORDER BY drafted_count DESC, player_name
+        ds.*,
+        rs.prev_score,
+        rs.prev_advancing
+    FROM daily_scores ds
+    JOIN ranked_scores rs ON ds.draft_entry_id = rs.draft_entry_id AND ds.date = rs.date
+    WHERE rs.rn = 1
 ");
-$stmtExposures->execute([':username' => $username]);
-$exposures = $stmtExposures->fetchAll(PDO::FETCH_ASSOC);
+$stmtDailyScores->execute([':username' => $username]);
+$dailyScores = $stmtDailyScores->fetchAll(PDO::FETCH_ASSOC);
+
+// Create a lookup for daily scores by draft_entry_id
+$dailyScoresLookup = [];
+foreach ($dailyScores as $score) {
+    $dailyScoresLookup[$score['draft_entry_id']] = $score;
+}
 
 // Update the query to include draft_entry_id
 $stmtUserTeams = $pdo->prepare("
-    SELECT username, draft_order, points_ahead, league_place, draft_entry_id
+    SELECT username, draft_order, points_ahead, league_place, draft_entry_id, wild_card
     FROM leaderboard
     WHERE username = :username
     ORDER BY points_ahead DESC
@@ -67,11 +82,83 @@ $stmtUserTeams = $pdo->prepare("
 $stmtUserTeams->execute([':username' => $username]);
 $userTeams = $stmtUserTeams->fetchAll(PDO::FETCH_ASSOC);
 
+// Calculate points changes and advancement changes
+foreach ($userTeams as &$team) {
+    $dailyScore = $dailyScoresLookup[$team['draft_entry_id']] ?? null;
+    if ($dailyScore) {
+        $team['score_change'] = $dailyScore['team_score'] - ($dailyScore['prev_score'] ?? $dailyScore['team_score']);
+        
+        // Only set advancement_change when there's an actual status change
+        if ($dailyScore['prev_advancing'] !== null) {
+            // From not advancing to advancing (0 to 1) = positive change
+            if ($dailyScore['advancing'] == 1 && $dailyScore['prev_advancing'] == 0) {
+                $team['advancement_change'] = 1;  // Up arrow
+            }
+            // From advancing to not advancing (1 to 0) = negative change
+            else if ($dailyScore['advancing'] == 0 && $dailyScore['prev_advancing'] == 1) {
+                $team['advancement_change'] = -1;  // Down arrow
+            }
+            else {
+                $team['advancement_change'] = null;  // No change, no arrow
+            }
+        } else {
+            $team['advancement_change'] = null;
+        }
+    } else {
+        $team['score_change'] = 0;
+        $team['advancement_change'] = null;
+    }
+}
+unset($team); // Break the reference
+
+// Get player exposures
+$stmtExposures = $pdo->prepare("
+    WITH user_stats AS (
+        SELECT 
+            player_id,
+            player_name,
+            slot_name,
+            team_abbr,
+            COUNT(*) as drafted_count,
+            AVG(advancing) * 100.0 as user_advance_rate
+        FROM exposures
+        WHERE username = :username
+        GROUP BY player_id, player_name, slot_name, team_abbr
+    ),
+    total_stats AS (
+        SELECT 
+            player_id,
+            AVG(advancing) * 100.0 as total_advance_rate
+        FROM exposures
+        GROUP BY player_id
+    ),
+    user_total_teams AS (
+        SELECT COUNT(DISTINCT draft_entry_id) as total_teams
+        FROM exposures
+        WHERE username = :username
+    )
+    SELECT 
+        us.player_name,
+        us.slot_name,
+        us.team_abbr,
+        us.player_id,
+        us.drafted_count,
+        ROUND((us.drafted_count * 100.0 / ut.total_teams), 1) as exposure_percentage,
+        ROUND(us.user_advance_rate, 1) as user_advance_rate,
+        ROUND(ts.total_advance_rate, 1) as total_advance_rate
+    FROM user_stats us
+    JOIN total_stats ts ON us.player_id = ts.player_id
+    CROSS JOIN user_total_teams ut
+    ORDER BY us.drafted_count DESC, us.player_name
+");
+$stmtExposures->execute([':username' => $username]);
+$exposures = $stmtExposures->fetchAll(PDO::FETCH_ASSOC);
+
 // Get all unique team IDs and abbreviations
 $stmtTeams = $pdo->prepare("
-    SELECT id, abbr
+    SELECT *
     FROM teams
-    ORDER BY abbr
+    ORDER BY team_name
 ");
 $stmtTeams->execute();
 $teams = $stmtTeams->fetchAll(PDO::FETCH_ASSOC);
@@ -80,9 +167,9 @@ $teams = $stmtTeams->fetchAll(PDO::FETCH_ASSOC);
 $stmtStacks = $pdo->prepare("
     SELECT 
         s.*,
-        t.abbr as team_abbr
+        t.team_abbr as team_abbr
     FROM stacks s
-    JOIN teams t ON s.team_id = t.id
+    JOIN teams t ON s.team_id = t.team_id
     WHERE s.username = :username
 ");
 $stmtStacks->execute([':username' => $username]);
@@ -151,7 +238,7 @@ $totalTeams = $teamStats['total_teams'];
             background: #e0e0e0;
         }
         .visualization {
-            width: 800px;
+            width: 900px;
             margin: 1rem auto;
             padding: 0.5rem;
         }
@@ -180,6 +267,7 @@ $totalTeams = $teamStats['total_teams'];
             justify-content: flex-start;
             position: relative;
             margin-left: 150px;
+            margin-right: 100px;
         }
 
         .points-bar {
@@ -450,6 +538,97 @@ $totalTeams = $teamStats['total_teams'];
             border-top: 2px solid #ddd;
             font-size: 0.9em;
         }
+
+        .wild-card-indicator {
+            position: absolute;
+            right: 50%;
+            transform: translateX(50%);
+            color: #007bff;
+            font-weight: bold;
+            font-size: 0.8em;
+            line-height: 14px;
+        }
+
+        .score-change {
+            margin-left: 10px;
+            font-size: 0.85em;
+            white-space: nowrap;
+        }
+
+        .score-change.positive {
+            color: #008800;
+        }
+
+        .score-change.negative {
+            color: #ff4444;
+        }
+
+        .advancement-change {
+            display: inline-block;
+            font-size: 1.1em;
+            font-weight: bold;
+            width: 20px;
+            text-align: center;
+            line-height: 1em;
+        }
+
+        .advancement-change.positive {
+            color: #008800;
+        }
+
+        .advancement-change.negative {
+            color: #ff4444;
+        }
+
+        /* Indicator styles */
+        .indicator-container {
+            position: absolute;
+            display: flex;
+            align-items: center;
+            right: -100px;
+            top: 0;
+            width: 120px;
+            height: 100%;
+        }
+
+        .arrow-column {
+            width: 20px;
+            text-align: center;
+        }
+
+        .score-column {
+            width: 70px;
+            text-align: right;
+            padding-right: 5px;
+        }
+
+        .score-change {
+            font-size: 0.85em;
+            white-space: nowrap;
+        }
+
+        .score-change.positive {
+            color: #008800;
+        }
+
+        .score-change.negative {
+            color: #ff4444;
+        }
+
+        .advancement-change {
+            display: inline-block;
+            font-size: 1.1em;
+            font-weight: bold;
+            line-height: 1em;
+        }
+
+        .advancement-change.positive {
+            color: #008800;
+        }
+
+        .advancement-change.negative {
+            color: #ff4444;
+        }
     </style>
 </head>
 <body>
@@ -500,6 +679,25 @@ $totalTeams = $teamStats['total_teams'];
                                          style="left: 150px; width: <?php echo $width; ?>px; background: #008800;"
                                          data-tooltip="<?php echo $tooltipText; ?>">
                                     </div>
+                                    <?php if ($team['wild_card']): ?>
+                                        <div class="wild-card-indicator">WC</div>
+                                    <?php endif; ?>
+                                    <div class="indicator-container">
+                                        <div class="arrow-column">
+                                            <?php if (isset($team['advancement_change']) && $team['advancement_change'] !== null): ?>
+                                                <div class="advancement-change <?php echo $team['advancement_change'] > 0 ? 'positive' : 'negative'; ?>">
+                                                    <?php echo $team['advancement_change'] > 0 ? '↑' : '↓'; ?>
+                                                </div>
+                                            <?php endif; ?>
+                                        </div>
+                                        <div class="score-column">
+                                            <?php if (isset($team['score_change']) && $team['score_change'] != 0): ?>
+                                                <div class="score-change <?php echo $team['score_change'] > 0 ? 'positive' : 'negative'; ?>">
+                                                    <?php echo $team['score_change'] > 0 ? '+' : ''; ?><?php echo number_format($team['score_change']); ?>
+                                                </div>
+                                            <?php endif; ?>
+                                        </div>
+                                    </div>
                                 </a>
                             <?php else: ?>
                                 <a href="team_details.php?draft_entry_id=<?php echo urlencode($team['draft_entry_id']); ?>&from_user=<?php echo urlencode($username); ?><?php 
@@ -509,6 +707,25 @@ $totalTeams = $teamStats['total_teams'];
                                     <div class="points-bar" 
                                          style="left: <?php echo 150 - $width; ?>px; width: <?php echo $width; ?>px; background: #ff4444;"
                                          data-tooltip="<?php echo $tooltipText; ?>">
+                                    </div>
+                                    <?php if ($team['wild_card']): ?>
+                                        <div class="wild-card-indicator">WC</div>
+                                    <?php endif; ?>
+                                    <div class="indicator-container">
+                                        <div class="arrow-column">
+                                            <?php if (isset($team['advancement_change']) && $team['advancement_change'] !== null): ?>
+                                                <div class="advancement-change <?php echo $team['advancement_change'] > 0 ? 'positive' : 'negative'; ?>">
+                                                    <?php echo $team['advancement_change'] > 0 ? '↑' : '↓'; ?>
+                                                </div>
+                                            <?php endif; ?>
+                                        </div>
+                                        <div class="score-column">
+                                            <?php if (isset($team['score_change']) && $team['score_change'] != 0): ?>
+                                                <div class="score-change <?php echo $team['score_change'] > 0 ? 'positive' : 'negative'; ?>">
+                                                    <?php echo $team['score_change'] > 0 ? '+' : ''; ?><?php echo number_format($team['score_change']); ?>
+                                                </div>
+                                            <?php endif; ?>
+                                        </div>
                                     </div>
                                 </a>
                             <?php endif; ?>
@@ -539,9 +756,9 @@ $totalTeams = $teamStats['total_teams'];
             </thead>
             <tbody>
                 <?php foreach ($exposures as $exposure): ?>
-                <tr class="exposure-row" data-position="<?php echo htmlentities($exposure['players_slotName']); ?>">
-                    <td><?php echo htmlentities($exposure['picks_player_name']); ?></td>
-                    <td><?php echo htmlentities($exposure['players_slotName']); ?></td>
+                <tr class="exposure-row" data-position="<?php echo htmlentities($exposure['slot_name']); ?>">
+                    <td><a href="player.php?id=<?php echo htmlentities($exposure['player_id']); ?>"><?php echo htmlentities($exposure['player_name']); ?></a></td>
+                    <td><?php echo htmlentities($exposure['slot_name']); ?></td>
                     <td class="numeric"><?php echo $exposure['drafted_count']; ?></td>
                     <td class="numeric exposure-cell <?php 
                         $exposureRate = $exposure['exposure_percentage'] / 100;
@@ -584,20 +801,20 @@ $totalTeams = $teamStats['total_teams'];
                     <tr>
                         <th></th>
                         <?php foreach ($teams as $team): ?>
-                            <th><?php echo htmlentities($team['abbr']); ?></th>
+                            <th><?php echo htmlentities($team['team_abbr']); ?></th>
                         <?php endforeach; ?>
                     </tr>
                 </thead>
                 <tbody>
                     <?php foreach ($teams as $team1): ?>
                         <tr>
-                            <th><?php echo htmlentities($team1['abbr']); ?></th>
+                            <th><?php echo htmlentities($team1['team_abbr']); ?></th>
                             <?php foreach ($teams as $team2): ?>
                                 <td class="stack-cell <?php 
-                                    if ($team1['id'] === 'SOLO' || $team2['id'] === 'SOLO') {
+                                    if ($team1['team_id'] === 'SOLO' || $team2['team_id'] === 'SOLO') {
                                         // Remove SOLO handling
                                     } else {
-                                        $pairKey = $team1['id'] < $team2['id'] ? $team1['id'] . '|' . $team2['id'] : $team2['id'] . '|' . $team1['id'];
+                                        $pairKey = $team1['team_id'] < $team2['team_id'] ? $team1['team_id'] . '|' . $team2['team_id'] : $team2['team_id'] . '|' . $team1['team_id'];
                                         if (isset($draftPairs[$pairKey])) {
                                             echo 'has-stack';
                                             $count = $draftPairs[$pairKey];
@@ -608,18 +825,18 @@ $totalTeams = $teamStats['total_teams'];
                                         }
                                     }
                                 ?>">
-                                    <?php if ($team1['id'] === 'SOLO' || $team2['id'] === 'SOLO'): ?>
+                                    <?php if ($team1['team_id'] === 'SOLO' || $team2['team_id'] === 'SOLO'): ?>
                                         <?php // Remove SOLO handling ?>
                                     <?php else: ?>
                                         <?php 
-                                        $pairKey = $team1['id'] < $team2['id'] ? $team1['id'] . '|' . $team2['id'] : $team2['id'] . '|' . $team1['id'];
+                                        $pairKey = $team1['team_id'] < $team2['team_id'] ? $team1['team_id'] . '|' . $team2['team_id'] : $team2['team_id'] . '|' . $team1['team_id'];
                                         if (isset($draftPairs[$pairKey])): 
                                         ?>
                                             <div class="stack-info" title="<?php 
                                                 $percent = ($draftPairs[$pairKey] / $totalTeams) * 100;
                                                 echo round($percent, 1) . '% of drafts';
                                             ?>">
-                                                <a href="leaderboard_teams.php?search=<?php echo urlencode($username); ?>&stack1=<?php echo urlencode($team1['id']); ?>&stack2=<?php echo urlencode($team2['id']); ?>">
+                                                <a href="leaderboard_teams.php?search=<?php echo urlencode($username); ?>&stack1=<?php echo urlencode($team1['team_id']); ?>&stack2=<?php echo urlencode($team2['team_id']); ?>">
                                                     <?php echo $draftPairs[$pairKey]; ?>
                                                 </a>
                                             </div>
@@ -633,16 +850,16 @@ $totalTeams = $teamStats['total_teams'];
                         <th></th>
                         <?php foreach ($teams as $team): ?>
                             <td class="stack-cell <?php 
-                                if (isset($teamTotals[$team['id']]) && $teamTotals[$team['id']] > 0) {
+                                if (isset($teamTotals[$team['team_id']]) && $teamTotals[$team['team_id']] > 0) {
                                     echo 'has-stack';
                                 }
                             ?>">
                                 <?php 
-                                if (isset($teamTotals[$team['id']]) && $teamTotals[$team['id']] > 0) {
-                                    $percent = ($teamTotals[$team['id']] / $totalTeams) * 100;
+                                if (isset($teamTotals[$team['team_id']]) && $teamTotals[$team['team_id']] > 0) {
+                                    $percent = ($teamTotals[$team['team_id']] / $totalTeams) * 100;
                                     echo '<div class="stack-info" title="' . round($percent, 1) . '% of drafts">';
-                                    echo '<a href="leaderboard_teams.php?search=' . urlencode($username) . '&stack1=' . urlencode($team['id']) . '">';
-                                    echo $teamTotals[$team['id']];
+                                    echo '<a href="leaderboard_teams.php?search=' . urlencode($username) . '&stack1=' . urlencode($team['team_id']) . '">';
+                                    echo $teamTotals[$team['team_id']];
                                     echo '</a></div>';
                                 }
                                 ?>

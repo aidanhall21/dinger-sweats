@@ -21,24 +21,32 @@ $minDrafts = isset($_GET['min_drafts']) ? $_GET['min_drafts'] : null;
 $stmtUser = $pdo->prepare("
     SELECT 
         l.username, 
-        l.draft_order,
         l.league_place,
-        up.player_id as picks_player_id,
-        up.player_name as picks_player_name,
-        up.position_name as players_slotName,
-        up.total_points,
-        up.used_points,
-        up.draft_pick as picks_overall_pick_number
+        l.wild_card,
+        td.player_id,
+        td.player_name,
+        td.slot_name,
+        SUM(td.total_points) as total_points,
+        SUM(td.usable_points) as usable_points,
+        td.overall_pick_number
     FROM leaderboard l
-    LEFT JOIN usable_points up ON l.draft_entry_id = up.draft_entry_id
+    LEFT JOIN team_details td ON l.draft_entry_id = td.draft_entry_id
     WHERE l.draft_entry_id = :draft_entry_id
+    GROUP BY 
+        l.username, 
+        l.league_place,
+        l.wild_card,
+        td.player_id,
+        td.player_name,
+        td.slot_name,
+        td.overall_pick_number
     ORDER BY 
-        CASE up.position_name 
+        CASE td.slot_name 
             WHEN 'P' THEN 1 
             WHEN 'IF' THEN 2 
             WHEN 'OF' THEN 3 
         END,
-        up.draft_pick ASC
+        td.overall_pick_number ASC
 ");
 $stmtUser->execute([':draft_entry_id' => $draftEntryId]);
 $results = $stmtUser->fetchAll(PDO::FETCH_ASSOC);
@@ -49,19 +57,19 @@ if (empty($results)) {
 
 // Get username and draft_order from first row
 $username = $results[0]['username'];
-$draftOrder = $results[0]['draft_order'];
+//$draftOrder = $results[0]['pick_order'];
 $leaguePlace = $results[0]['league_place'];
 $isAdvancing = $results[0]['league_place'] <= 2;
-
+$isWildCard = $results[0]['wild_card'] === 1;
 // Format roster data
 $roster = array_map(function($row) {
     return [
-        'picks_player_id' => $row['picks_player_id'],
-        'picks_player_name' => $row['picks_player_name'],
-        'players_slotName' => $row['players_slotName'],
+        'player_id' => $row['player_id'],
+        'player_name' => $row['player_name'],
+        'slot_name' => $row['slot_name'],
         'total_points' => $row['total_points'],
-        'used_points' => $row['used_points'],
-        'picks_overall_pick_number' => $row['picks_overall_pick_number']
+        'usable_points' => $row['usable_points'],
+        'overall_pick_number' => $row['overall_pick_number']
     ];
 }, $results);
 
@@ -69,14 +77,13 @@ $roster = array_map(function($row) {
 $stmtScores = $pdo->prepare("
     SELECT 
         w.week_number,
-        SUM(CASE WHEN position_name = 'P' THEN total_points ELSE 0 END) as pitcher_points,
-        SUM(CASE WHEN position_name = 'IF' THEN total_points ELSE 0 END) as infield_points,
-        SUM(CASE WHEN position_name = 'OF' THEN total_points ELSE 0 END) as outfield_points,
-        SUM(total_points) as total_points
-    FROM top_position_scores t
-    JOIN weeks w ON t.week_id = w.week_id
-    WHERE t.picks_draft_entry_id = :draft_entry_id
-    AND w.week_number <= 16
+        SUM(CASE WHEN slot_name = 'P' THEN usable_points ELSE 0 END) as pitcher_points,
+        SUM(CASE WHEN slot_name = 'IF' THEN usable_points ELSE 0 END) as infield_points,
+        SUM(CASE WHEN slot_name = 'OF' THEN usable_points ELSE 0 END) as outfield_points,
+        SUM(usable_points) as usable_points
+    FROM team_details td
+    JOIN weeks w ON td.week_id = w.week_id
+    WHERE td.draft_entry_id = :draft_entry_id
     GROUP BY w.week_number
     ORDER BY w.week_number ASC
 ");
@@ -87,7 +94,6 @@ $weeklyScores = $stmtScores->fetchAll(PDO::FETCH_ASSOC);
 $stmtAverages = $pdo->prepare("
     SELECT week_number, average_advancing_score 
     FROM weekly_averages
-    WHERE week_number <= 16
     ORDER BY week_number ASC
 ");
 $stmtAverages->execute();
@@ -117,48 +123,47 @@ $infieldPoints = array_column($weeklyScores, 'infield_points');
 $outfieldPoints = array_column($weeklyScores, 'outfield_points');
 
 // Calculate the median used points from the roster
-$usedPointsArray = array_column($roster, 'used_points');
+$usedPointsArray = array_column($roster, 'usable_points');
 sort($usedPointsArray);
 $medianUsedPoints = $usedPointsArray[floor(count($usedPointsArray)/2)];
 
 // Get total used points
-$totalUsedPoints = array_sum(array_column($roster, 'used_points'));
+$totalUsedPoints = array_sum(array_column($roster, 'usable_points'));
 
 // After getting the initial team data, get all teams in same draft
 $stmtLeague = $pdo->prepare("
-    SELECT draft_entry_id, cumulative_points, username, league_place
+    SELECT draft_entry_id, team_score, username, league_place, wild_card
     FROM leaderboard
     WHERE draft_id = (
         SELECT draft_id 
         FROM leaderboard 
         WHERE draft_entry_id = :draft_entry_id
     )
-    ORDER BY cumulative_points DESC
+    ORDER BY team_score DESC
 ");
 $stmtLeague->execute([':draft_entry_id' => $draftEntryId]);
 $leagueTeams = $stmtLeague->fetchAll(PDO::FETCH_ASSOC);
 
 // Calculate min and max scores for scaling
-$maxScore = $leagueTeams[0]['cumulative_points'];
-$minScore = end($leagueTeams)['cumulative_points'];
+$maxScore = $leagueTeams[0]['team_score'];
+$minScore = end($leagueTeams)['team_score'];
 
 // Modify the weekly player scores query to include week_id
 $stmtWeeklyScores = $pdo->prepare("
     SELECT 
-        pr.picks_player_id,
-        pr.total_points as weekly_points,
-        pr.position_rank,
+        td.player_id,
+        td.total_points as weekly_points,
+        td.position_rank,
         w.week_id,
         w.week_number
-    FROM player_ranks pr
-    JOIN weeks w ON pr.week_id = w.week_id
-    WHERE pr.picks_draft_entry_id = :draft_entry_id
-    AND w.week_number <= 16
+    FROM team_details td
+    JOIN weeks w ON td.week_id = w.week_id
+    WHERE td.draft_entry_id = :draft_entry_id
 ");
 $stmtWeeklyScores->execute([':draft_entry_id' => $draftEntryId]);
 $weeklyPlayerScores = [];
 while ($row = $stmtWeeklyScores->fetch(PDO::FETCH_ASSOC)) {
-    $weeklyPlayerScores[$row['picks_player_id']][$row['week_number']] = [
+    $weeklyPlayerScores[$row['player_id']][$row['week_number']] = [
         'points' => $row['weekly_points'],
         'rank' => $row['position_rank'],
         'week_id' => $row['week_id']
@@ -170,7 +175,7 @@ while ($row = $stmtWeeklyScores->fetch(PDO::FETCH_ASSOC)) {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Sweating Dingers | Draft Information | <?php echo htmlentities($username); ?> (<?php echo htmlentities($draftOrder); ?>)</title>
+    <title>Sweating Dingers | Draft Information | <?php echo htmlentities($username); ?></title>
     <link rel="icon" type="image/x-icon" href="/favicon.ico">
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
@@ -308,7 +313,7 @@ while ($row = $stmtWeeklyScores->fetch(PDO::FETCH_ASSOC)) {
 <body>
     <?php include_once __DIR__ . '/../src/includes/navigation.php'; ?>
     
-    <h1>Team Details for <?php echo htmlentities($username); ?> (<?php echo htmlentities($draftOrder); ?>)</h1>
+    <h1>Team Details for <?php echo htmlentities($username); ?></h1>
     
     <div style="width: 300px; margin: 1rem auto; padding: 1rem; background: #f8f8f8; border: 1px solid #ddd; border-radius: 4px; text-align: center;">
         <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -322,6 +327,8 @@ while ($row = $stmtWeeklyScores->fetch(PDO::FETCH_ASSOC)) {
                 <strong>Status:</strong> 
                 <?php if ($isAdvancing): ?>
                     <span style="color: #008800; font-weight: bold;">ADV</span>
+                <?php elseif ($isWildCard): ?>
+                    <span style="color: #0066cc; font-weight: bold;">WC</span>
                 <?php else: ?>
                     <span>-</span>
                 <?php endif; ?>
@@ -339,9 +346,10 @@ while ($row = $stmtWeeklyScores->fetch(PDO::FETCH_ASSOC)) {
             <?php
             foreach ($leagueTeams as $team) {
                 // Calculate x position (0-800 range now)
-                $xPos = 800 * ($team['cumulative_points'] - $minScore) / ($maxScore - $minScore);
+                $xPos = 800 * ($team['team_score'] - $minScore) / ($maxScore - $minScore);
                 $isCurrentTeam = $team['draft_entry_id'] === $draftEntryId;
                 $isAdvancing = $team['league_place'] <= 2;
+                $isWildCard = $team['wild_card'] === 1;
                 
                 // Determine fill and stroke colors
                 $fill = '#fff';
@@ -350,12 +358,18 @@ while ($row = $stmtWeeklyScores->fetch(PDO::FETCH_ASSOC)) {
                 if ($isCurrentTeam && $isAdvancing) {
                     $fill = '#008800';
                     $stroke = '#ffd700';
+                } elseif ($isCurrentTeam && $isWildCard) {
+                    $fill = '#0066cc';
+                    $stroke = '#ffd700';
                 } elseif ($isCurrentTeam) {
                     $fill = '#ffd700';
                     $stroke = '#000';
                 } elseif ($isAdvancing) {
                     $fill = '#008800';
                     $stroke = '#008800';
+                } elseif ($isWildCard) {
+                    $fill = '#0066cc';
+                    $stroke = '#0066cc';
                 }
                 
                 // Create a clickable group with preserved navigation parameters
@@ -371,7 +385,7 @@ while ($row = $stmtWeeklyScores->fetch(PDO::FETCH_ASSOC)) {
                     $fromAdvance ? '&from_advance=1' : '',
                     $minDrafts ? '&min_drafts=' . htmlspecialchars($minDrafts) : '',
                     htmlspecialchars($team['username']),
-                    number_format($team['cumulative_points'], 0),
+                    number_format($team['team_score'], 0),
                     $xPos,
                     $fill,
                     $stroke
@@ -405,19 +419,19 @@ while ($row = $stmtWeeklyScores->fetch(PDO::FETCH_ASSOC)) {
             <tbody id="rosterBody">
             <?php foreach ($roster as $player): ?>
                 <tr>
-                    <td><?php echo htmlentities($player['picks_player_name']); ?></td>
+                    <td><a href="player.php?id=<?php echo htmlentities($player['player_id']); ?>"><?php echo htmlentities($player['player_name']); ?></a></td>
                     <td class="position <?php 
-                        if ($player['players_slotName'] === 'P') {
+                        if ($player['slot_name'] === 'P') {
                             echo 'pitcher';
-                        } elseif ($player['players_slotName'] === 'IF') {
+                        } elseif ($player['slot_name'] === 'IF') {
                             echo 'infield';
-                        } elseif ($player['players_slotName'] === 'OF') {
+                        } elseif ($player['slot_name'] === 'OF') {
                             echo 'outfield';
                         }
-                    ?>"><?php echo htmlentities($player['players_slotName']); ?></td>
-                    <td><?php echo htmlentities($player['picks_overall_pick_number']); ?></td>
+                    ?>"><?php echo htmlentities($player['slot_name']); ?></td>
+                    <td><?php echo htmlentities($player['overall_pick_number']); ?></td>
                     <td class="total-points <?php 
-                        $position = $player['players_slotName'];
+                        $position = $player['slot_name'];
                         $points = (float)$player['total_points'];
                         $median = ($position === 'P') ? $totStats['pitchers'] : $totStats['hitters'];
                         $diff = abs($points - $median);
@@ -428,7 +442,7 @@ while ($row = $stmtWeeklyScores->fetch(PDO::FETCH_ASSOC)) {
                         <?php echo htmlentities($player['total_points']); ?>
                     </td>
                     <td class="used-points <?php 
-                        $usedPoints = (float)$player['used_points'];
+                        $usedPoints = (float)$player['usable_points'];
                         $diff = abs($usedPoints - $medianUsedPoints);
                         $maxDiff = max(array_map('abs', array_map(function($p) use ($medianUsedPoints) {
                             return (float)$p - $medianUsedPoints;
@@ -436,7 +450,7 @@ while ($row = $stmtWeeklyScores->fetch(PDO::FETCH_ASSOC)) {
                         $normalizedDiff = $maxDiff > 0 ? min($diff / $maxDiff, 1) : 0;
                         echo $usedPoints > $medianUsedPoints ? 'above' : 'below';
                     ?>" style="--points-diff: <?php echo $normalizedDiff; ?>">
-                        <?php echo htmlentities($player['used_points']); ?>
+                        <?php echo htmlentities($player['usable_points']); ?>
                     </td>
                 </tr>
             <?php endforeach; ?>
@@ -470,24 +484,24 @@ while ($row = $stmtWeeklyScores->fetch(PDO::FETCH_ASSOC)) {
             headerCells[4].style.display = 'none';
             
             const positionPlayers = rosterData
-                .filter(player => player.players_slotName !== 'P')
+                .filter(player => player.slot_name !== 'P')
                 .map(player => ({
                     ...player,
-                    weekData: weeklyPlayerScores[player.picks_player_id]?.[weekNum]
+                    weekData: weeklyPlayerScores[player.player_id]?.[weekNum]
                 }))
                 .filter(player => player.weekData)
                 .sort((a, b) => b.weekData.points - a.weekData.points);
             
             const topNonTop3 = positionPlayers.find(player => {
-                const position = player.players_slotName;
+                const position = player.slot_name;
                 const positionRank = player.weekData.rank;
                 return positionRank > 3;
             });
             
             rosterData.forEach((player, index) => {
                 const row = tbody.children[index];
-                const playerId = player.picks_player_id;
-                const position = player.players_slotName;
+                const playerId = player.player_id;
+                const position = player.slot_name;
                 
                 const pointsCell = row.querySelector('td:nth-child(4)');
                 const usedPointsCell = row.querySelector('td:nth-child(5)');
@@ -508,7 +522,7 @@ while ($row = $stmtWeeklyScores->fetch(PDO::FETCH_ASSOC)) {
                         pointsCell.style.backgroundColor = 'rgba(0, 128, 0, 0.2)';
                     } else if (position === 'OF' && weekData.rank <= 3) {
                         pointsCell.style.backgroundColor = 'rgba(255, 165, 0, 0.2)';
-                    } else if (topNonTop3 && playerId === topNonTop3.picks_player_id) {
+                    } else if (topNonTop3 && playerId === topNonTop3.player_id) {
                         pointsCell.style.backgroundColor = 'rgba(255, 0, 0, 0.2)';
                     } else {
                         pointsCell.style.backgroundColor = '';
@@ -536,13 +550,13 @@ while ($row = $stmtWeeklyScores->fetch(PDO::FETCH_ASSOC)) {
                 usedPointsCell.style.display = '';
                 
                 pointsCell.textContent = player.total_points;
-                usedPointsCell.textContent = player.used_points;
+                usedPointsCell.textContent = player.usable_points;
                 
-                pointsCell.className = `total-points ${getPointsClass(player.total_points, player.players_slotName)}`;
-                usedPointsCell.className = `used-points ${getUsedPointsClass(player.used_points)}`;
+                pointsCell.className = `total-points ${getPointsClass(player.total_points, player.slot_name)}`;
+                usedPointsCell.className = `used-points ${getUsedPointsClass(player.usable_points)}`;
                 
-                pointsCell.style.setProperty('--points-diff', getPointsDiff(player.total_points, player.players_slotName));
-                usedPointsCell.style.setProperty('--points-diff', getUsedPointsDiff(player.used_points));
+                pointsCell.style.setProperty('--points-diff', getPointsDiff(player.total_points, player.slot_name));
+                usedPointsCell.style.setProperty('--points-diff', getUsedPointsDiff(player.usable_points));
                 pointsCell.style.backgroundColor = '';
             });
         }

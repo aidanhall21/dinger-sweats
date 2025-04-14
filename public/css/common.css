@@ -204,6 +204,31 @@ td a:hover {
     color: #0066cc;
 }
 
+/* Ownership and Advance Rate cell styles */
+.ownership-cell, .advance-cell {
+    position: relative;
+}
+
+.ownership-cell::before, .advance-cell::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: -1;
+}
+
+.ownership-cell.above::before, .advance-cell.above::before {
+    background-color: #00ff00;
+    opacity: calc(var(--ownership-diff, 0) * 0.8);
+}
+
+.ownership-cell.below::before, .advance-cell.below::before {
+    background-color: #ff0000;
+    opacity: calc(var(--ownership-diff, 0) * 0.8);
+}
+
 /* Sortable table headers */
 .sortable {
     cursor: pointer;
@@ -503,6 +528,33 @@ td a:hover {
 }
 
 .player-info {
+    margin-bottom: 2rem;
     text-align: center;
-    margin: 20px 0;
+}
+
+.player-info h1 {
+    margin-bottom: 1rem;
+    font-size: 2.5rem;
+}
+
+.player-stats {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 1.5rem;
+    margin-top: 1rem;
+}
+
+.stat-item {
+    display: inline-block;
+    margin: 0.5rem 1rem;
+}
+
+.stat-label {
+    font-weight: bold;
+    margin-right: 0.5rem;
+}
+
+.stat-value {
+    color: #333;
 } 

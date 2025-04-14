@@ -3,10 +3,6 @@ require_once __DIR__ . '/../src/db.php';
 
 $pdo = getDbConnection();
 
-// Cache settings
-$cacheFile = __DIR__ . '/../cache/advance_leaderboard.json';
-$cacheExpiry = 1800; // 10 minutes
-
 // Only keep the min_drafts filter
 $offset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
 $minDrafts = isset($_GET['min_drafts']) && $_GET['min_drafts'] !== '' ? (int)$_GET['min_drafts'] : 20; // Default minimum drafts is 20
@@ -33,43 +29,14 @@ $query = "
     LIMIT 150 OFFSET :offset
 ";
 
-// If no filters applied (just using default min_drafts), try to use cached data
-if ($offset === 0 && $minDrafts === 20) {
-    if (file_exists($cacheFile) && (time() - filemtime($cacheFile) < $cacheExpiry)) {
-        $cachedData = json_decode(file_get_contents($cacheFile), true);
-        $teams = $cachedData['teams'];
-        $totalCount = $cachedData['totalCount'];
-    } else {
-        // Execute the query and cache the results
-        $statement = $pdo->prepare($query);
-        $statement->bindParam(':min_drafts', $minDrafts, PDO::PARAM_INT);
-        $statement->bindParam(':offset', $offset, PDO::PARAM_INT);
-        $statement->execute();
-        $teams = $statement->fetchAll(PDO::FETCH_ASSOC);
+// Execute query
+$statement = $pdo->prepare($query);
+$statement->bindParam(':min_drafts', $minDrafts, PDO::PARAM_INT);
+$statement->bindParam(':offset', $offset, PDO::PARAM_INT);
+$statement->execute();
+$teams = $statement->fetchAll(PDO::FETCH_ASSOC);
 
-        $totalCount = !empty($teams) ? $teams[0]['total_count'] : 0;
-
-        // Cache the data
-        $cacheData = [
-            'teams' => $teams,
-            'totalCount' => $totalCount
-        ];
-        
-        if (!is_dir(dirname($cacheFile))) {
-            mkdir(dirname($cacheFile), 0777, true);
-        }
-        file_put_contents($cacheFile, json_encode($cacheData));
-    }
-} else {
-    // Execute query normally for filtered results
-    $statement = $pdo->prepare($query);
-    $statement->bindParam(':min_drafts', $minDrafts, PDO::PARAM_INT);
-    $statement->bindParam(':offset', $offset, PDO::PARAM_INT);
-    $statement->execute();
-    $teams = $statement->fetchAll(PDO::FETCH_ASSOC);
-    
-    $totalCount = !empty($teams) ? $teams[0]['total_count'] : 0;
-}
+$totalCount = !empty($teams) ? $teams[0]['total_count'] : 0;
 
 // Create current URL without offset parameter
 $currentUrl = strtok($_SERVER["REQUEST_URI"], '?');
@@ -96,7 +63,7 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
 <body>
     <?php include_once __DIR__ . '/../src/includes/navigation.php'; ?>
     
-    <h1>Drafted Teams Advance Rate Leaderboard</h1>
+    <h1>Dinger Advance Rate Leaderboard</h1>
 
     <form method="GET" class="filter-form">
         <div class="filter-row">

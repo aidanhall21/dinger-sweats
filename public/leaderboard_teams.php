@@ -5,7 +5,7 @@ $pdo = getDbConnection();
 
 // Get all team abbreviations for dropdowns
 $stmtTeams = $pdo->prepare("
-    SELECT team_id, team_name 
+    SELECT team_id, team_name, team_abbr 
     FROM teams 
     ORDER BY team_name
 ");
@@ -21,11 +21,12 @@ $slots = isset($_GET['slots']) && is_array($_GET['slots']) ? array_map('intval',
 $offset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
 $player1 = isset($_GET['player1']) && $_GET['player1'] !== '' ? trim($_GET['player1']) : '';
 $player2 = isset($_GET['player2']) && $_GET['player2'] !== '' ? trim($_GET['player2']) : '';
-// $stack1 = isset($_GET['stack1']) && $_GET['stack1'] !== '' ? trim($_GET['stack1']) : '';
-// $stack2 = isset($_GET['stack2']) && $_GET['stack2'] !== '' ? trim($_GET['stack2']) : '';
+$stack1 = isset($_GET['stack1']) && $_GET['stack1'] !== '' ? trim($_GET['stack1']) : '';
+$stack2 = isset($_GET['stack2']) && $_GET['stack2'] !== '' ? trim($_GET['stack2']) : '';
 $slowsOnly = isset($_GET['slows_only']) ? true : false;
 $fastsOnly = isset($_GET['fasts_only']) ? true : false;
 $leaguePlace = isset($_GET['league_place']) && $_GET['league_place'] !== '' ? (int)$_GET['league_place'] : null;
+$wildCardsOnly = isset($_GET['wild_cards_only']) ? true : false;
 $params = [];
 
 // Build base query
@@ -75,14 +76,11 @@ if ($needsStructure) {
 
 if ($needsPicks) {
     $query .= " AND l.draft_entry_id IN (
-        SELECT p1.draft_entry_id 
-        FROM picks p1
-        WHERE p1.player_id = :player1" . 
-        ($player2 !== '' ? " AND EXISTS (
-            SELECT 1 FROM picks p2
-            WHERE p2.draft_entry_id = p1.draft_entry_id
-            AND p2.player_id = :player2
-        )" : "") . "
+        SELECT draft_entry_id 
+        FROM picks
+        WHERE player_id IN (:player1" . ($player2 !== '' ? ", :player2" : "") . ")
+        GROUP BY draft_entry_id
+        HAVING COUNT(DISTINCT player_id) = " . ($player2 !== '' ? "2" : "1") . "
     )";
     $params[':player1'] = $player1;
     if ($player2 !== '') {
@@ -91,7 +89,7 @@ if ($needsPicks) {
 }
 
 // Add stack filtering
-/*if ($stack1 !== '' || $stack2 !== '') {
+if ($stack1 !== '' || $stack2 !== '') {
     // If stack2 is set but stack1 is empty, swap them for consistent behavior
     if ($stack1 === '' && $stack2 !== '') {
         $stack1 = $stack2;
@@ -109,7 +107,7 @@ if ($needsPicks) {
     if ($stack2 !== '') {
         $params[':stack2'] = $stack2;
     }
-}*/
+}
 
 if ($slowsOnly || $fastsOnly) {
     $query .= " AND l.draft_clock = :draft_clock";
@@ -125,7 +123,11 @@ if (!empty($slots)) {
     }
 }
 
-$query .= " ORDER BY l.team_score DESC";
+if ($wildCardsOnly) {
+    $query .= " AND l.wild_card = 1";
+}
+
+$query .= " ORDER BY l.rank ASC";
 
 // Add window functions to get total count and advance info in one query
 $finalQuery = "
@@ -151,7 +153,7 @@ $finalQuery = "
         c.advancing_count
     FROM (SELECT DISTINCT * FROM filtered_teams) t
     CROSS JOIN team_counts c
-    ORDER BY t.team_score DESC
+    ORDER BY t.rank ASC
     LIMIT 150 OFFSET :offset
 ";
 
@@ -176,7 +178,7 @@ $wildCardCutoff = $wildCardStmt->fetchColumn();
 
 $rankedTeams = array_map(function($team) {
     // Convert date string to DateTime object and format it
-    $date = DateTime::createFromFormat('m/d', $team['draft_filled_time']);
+    $date = DateTime::createFromFormat('Y-m-d H:i:s.u', $team['draft_filled_time']);
     $formattedDate = $date ? $date->format('M d') : $team['draft_filled_time'];
     
     return [
@@ -377,13 +379,6 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
                 }
             });
 
-            // Add "None" option to team autocomplete
-            $('.ui-autocomplete').on('mouseenter', function() {
-                if (!$(this).find('.ui-menu-item:contains("None")').length) {
-                    $(this).append('<div class="ui-menu-item" data-value="NONE">None</div>');
-                }
-            });
-            
             // Handle "None" selection
             $(document).on('click', '.ui-menu-item:contains("None")', function() {
                 const inputId = $(this).closest('.ui-autocomplete').prev().attr('id');
@@ -398,7 +393,7 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
 <body>
     <?php include_once __DIR__ . '/../src/includes/navigation.php'; ?>
     
-    <h1>Drafted Teams Leaderboard</h1>
+    <h1>Dinger Drafts Leaderboard</h1>
 
     <form method="GET" class="filter-form">
         <!-- First Row -->
@@ -423,7 +418,7 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
                        placeholder="Search player..."
                        value="<?php 
                            if ($player1 !== '') {
-                               $stmt = $pdo->prepare("SELECT picks_player_name FROM picks_info WHERE picks_player_id = ? LIMIT 1");
+                               $stmt = $pdo->prepare("SELECT player_name FROM picks WHERE player_id = ? LIMIT 1");
                                $stmt->execute([$player1]);
                                echo htmlspecialchars($stmt->fetchColumn());
                            }
@@ -442,7 +437,7 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
                        placeholder="Search player..."
                        value="<?php 
                            if ($player2 !== '') {
-                               $stmt = $pdo->prepare("SELECT picks_player_name FROM picks_info WHERE picks_player_id = ? LIMIT 1");
+                               $stmt = $pdo->prepare("SELECT player_name FROM picks WHERE player_id = ? LIMIT 1");
                                $stmt->execute([$player2]);
                                echo htmlspecialchars($stmt->fetchColumn());
                            }
@@ -487,16 +482,6 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
             </div>
 
             <div class="filter-section">
-                <label for="league_place">League Place:</label>
-                <input type="number" 
-                       id="league_place"
-                       name="league_place" 
-                       min="1" 
-                       max="12"
-                       value="<?php echo isset($_GET['league_place']) ? htmlspecialchars($_GET['league_place']) : ''; ?>">
-            </div>
-
-            <div class="filter-section">
                 <label>Draft Order:</label>
                 <div class="draft-slots-grid">
                     <?php for ($i = 1; $i <= 12; $i++): ?>
@@ -514,6 +499,15 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
             <div class="filter-section checkbox-group">
                 <label>
                     <input type="checkbox" 
+                           name="wild_cards_only" 
+                           <?php echo isset($_GET['wild_cards_only']) ? 'checked' : ''; ?>>
+                    Wild Cards
+                </label>
+            </div>
+
+            <div class="filter-section checkbox-group">
+                <label>
+                    <input type="checkbox" 
                            name="slows_only" 
                            <?php echo $slowsOnly ? 'checked' : ''; ?>>
                     Slows Only
@@ -525,15 +519,28 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
                     Fasts Only
                 </label>
             </div>
+        </div>
+
+        <!-- Third Row -->
+        <div class="filter-row">
+            <div class="filter-section">
+                <label for="league_place">League Place:</label>
+                <input type="number" 
+                       id="league_place"
+                       name="league_place" 
+                       min="1" 
+                       max="12"
+                       value="<?php echo isset($_GET['league_place']) ? htmlspecialchars($_GET['league_place']) : ''; ?>">
+            </div>
 
             <div class="filter-section">
                 <label for="stack1">Stack 1:</label>
                 <select id="stack1" name="stack1" class="player-search">
                     <option value="">Select team...</option>
                     <?php foreach ($teamOptions as $team): ?>
-                        <option value="<?php echo htmlentities($team['id'] ?? ''); ?>" 
-                                <?php echo $stack1 === $team['id'] ? 'selected' : ''; ?>>
-                            <?php echo htmlentities($team['abbr'] ?? ''); ?>
+                        <option value="<?php echo htmlentities($team['team_id'] ?? ''); ?>" 
+                                <?php echo $stack1 === $team['team_id'] ? 'selected' : ''; ?>>
+                            <?php echo htmlentities($team['team_name'] ?? ''); ?>
                         </option>
                     <?php endforeach; ?>
                 </select>
@@ -544,9 +551,9 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
                 <select id="stack2" name="stack2" class="player-search">
                     <option value="">Select team...</option>
                     <?php foreach ($teamOptions as $team): ?>
-                        <option value="<?php echo htmlentities($team['id'] ?? ''); ?>" 
-                                <?php echo $stack2 === $team['id'] ? 'selected' : ''; ?>>
-                            <?php echo htmlentities($team['abbr'] ?? ''); ?>
+                        <option value="<?php echo htmlentities($team['team_id'] ?? ''); ?>" 
+                                <?php echo $stack2 === $team['team_id'] ? 'selected' : ''; ?>>
+                            <?php echo htmlentities($team['team_name'] ?? ''); ?>
                         </option>
                     <?php endforeach; ?>
                 </select>
@@ -560,7 +567,7 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
     </form>
 
     <div style="width: 80%; margin: 1rem auto; padding: 0.5rem; background-color: #f2f2f2; border-radius: 4px; text-align: center;">
-        <strong>Advance Rate:</strong> <?php echo $advancingCount; ?> of <?php echo $totalCount; ?> teams (<?php echo $advanceRate; ?>%)<br>
+        <strong>Advance Rate:</strong> <?php echo number_format($advancingCount); ?> of <?php echo number_format($totalCount); ?> teams (<?php echo $advanceRate; ?>%)<br>
         <div style="margin-top: 0.5rem;">
             <strong>Wild Card Cutoff:</strong> <?php echo number_format($wildCardCutoff, 0); ?> points
         </div>
@@ -589,11 +596,15 @@ $currentUrlWithParams = $currentUrl . '?' . http_build_query($queryParams);
             <tr class="<?php echo $rowClass; ?>">
                 <td><?php echo $teamData['rank']; ?></td>
                 <td>
-                    <a href="team_details.php?draft_entry_id=<?php echo urlencode($teamData['draft_entry_id']); ?>">
+                    <a href="user_details.php?username=<?php echo urlencode($teamData['username']); ?>">
                         <?php echo htmlentities($teamData['username']); ?>
                     </a>
                 </td>
-                <td><?php echo htmlentities($teamData['total_points']); ?></td>
+                <td>
+                    <a href="team_details.php?draft_entry_id=<?php echo urlencode($teamData['draft_entry_id']); ?>">
+                        <?php echo htmlentities($teamData['total_points']); ?>
+                    </a>
+                </td>
                 <td><?php echo htmlentities($teamData['draft_date']); ?></td>
             </tr>
         <?php endforeach; ?>

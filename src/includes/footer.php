@@ -26,5 +26,16 @@ document.addEventListener('DOMContentLoaded', function() {
     // Run on load and resize
     adjustFooter();
     window.addEventListener('resize', adjustFooter);
+
+    // Handle tab changes
+    const tabs = document.querySelectorAll('.tab');
+    if (tabs.length > 0) {
+        tabs.forEach(tab => {
+            tab.addEventListener('click', () => {
+                // Small delay to allow content to be shown
+                setTimeout(adjustFooter, 100);
+            });
+        });
+    }
 });
 </script> 

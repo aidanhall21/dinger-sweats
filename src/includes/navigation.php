@@ -44,7 +44,6 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-    /* Temporarily disabled username search functionality
     const searchInput = document.getElementById('username-search');
     const searchResults = document.getElementById('search-results');
     const hiddenInput = document.getElementById('username-hidden');
@@ -134,7 +133,6 @@ document.addEventListener('DOMContentLoaded', function() {
             searchResults.style.display = 'block';
         }
     });
-    */
     
     // Player search functionality
     const playerSearchInput = document.getElementById('player-search');

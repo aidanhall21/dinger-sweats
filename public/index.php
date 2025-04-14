@@ -46,9 +46,9 @@ require_once __DIR__ . '/../src/db.php';
     
     <div class="main-content">
         <h1>Welcome to Sweating Dingers!</h1>
-        <!-- <h3>Your 2024 Dinger regular season data review site</h3> -->
-        <h4>Please see <a href="https://x.com/tistonionwings/status/1905676475988410864" target="_blank">this post</a> for an update on 2025 progress.</h4>
-        <!-- <p>Select a leaderboard above to begin.</p> -->
+        <h3>Your 2025 Dinger review site</h3>
+        <!-- <h4>Please see <a href="https://x.com/tistonionwings/status/1905676475988410864" target="_blank">this post</a> for an update on 2025 progress.</h4> -->
+        <p>Select a leaderboard above to begin.</p>
     </div>
     
     <?php include_once __DIR__ . '/../src/includes/footer.php'; ?>
